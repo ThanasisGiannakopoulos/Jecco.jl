@@ -8,6 +8,14 @@ abstract type AbstractDerivOperator{T,N} end
 D1_21_weights() = [-1.0,  0.0, 1.0] ./ 2.0
 D2_21_weights() = [ 1.0, -2.0, 1.0]
 
+# forward 2nd order stencil for 1st and 2nd derivatives
+D1_21_weights_forw() = [-1.5, 2.0, -0.5]
+D2_21_weights_forw() = [2.0, -5.0, 4.0, -1.0]
+
+# backward 2nd order stencil for 1st and 2nd derivatives
+D1_21_weights_back() = [0.5, -2.0, 1.5]
+D2_21_weighs_back() = [-1.0, 4.0, -5.0, 2.0]
+
 D1_42_weights() = [ 1.0, -8.0,   0.0,  8.0, -1.0] ./ 12.0
 D2_42_weights() = [-1.0, 16.0, -30.0, 16.0, -1.0] ./ 12.0
 
@@ -18,7 +26,10 @@ struct FiniteDiffDeriv{T<:Real,N,T2,S} <: AbstractDerivOperator{T,N}
     dx                      :: T2
     len                     :: Int
     stencil_length          :: Int
+    stencil_length_bd       :: Int
     stencil_coefs           :: S
+    stencil_coefs_forw      :: S
+    stencil_coefs_back      :: S
 end
 
 struct SpectralDeriv{T<:Real,N,S} <: AbstractDerivOperator{T,N}
@@ -37,6 +48,9 @@ function CenteredDiff{N}(derivative_order::Int,
     stencil_length = derivative_order + approximation_order - 1 +
         (derivative_order+approximation_order)%2
 
+    # for periodic BC this is the same since there is only the centered stencil
+    stencil_length_bd = stencil_length
+    
     # TODO: this can all be improved...
 
     if approximation_order == 2
@@ -61,12 +75,72 @@ function CenteredDiff{N}(derivative_order::Int,
 
     stencil_coefs = (1/dx^derivative_order) .* weights
 
+    # the following are the same for periodic BC
+    stencil_coefs_forw = stencil_coefs
+    stencil_coefs_back = stencil_coefs
+    
     FiniteDiffDeriv{T,N,T,typeof(stencil_coefs)}(derivative_order, approximation_order,
-                                                 dx, len, stencil_length, stencil_coefs)
+                                                 dx, len, stencil_length, stencil_length_bd,
+                                                 stencil_coefs,stencil_coefs_forw, stencil_coefs_back)
 end
 
 CenteredDiff(args...) = CenteredDiff{1}(args...)
 
+# non-periodic FD derivative
+struct Non_periodic_FD{N} end
+
+function Non_periodic_FD{N}(derivative_order::Int,
+                         approximation_order::Int, dx::T,
+                         len::Int) where {T<:Real,N}
+    @assert approximation_order > 1 "approximation_order must be greater than 1."
+
+    # maybe change since forward and backward D2 stencils are longer than what below gives
+    stencil_length = derivative_order + approximation_order - 1 +
+        (derivative_order+approximation_order)%2
+
+    # for the boundary; works for 2nd order approx, maybe not for higher
+    stencil_length_bd = derivative_order + approximation_order
+
+    # TODO: this can all be improved...
+
+    if approximation_order == 2
+        if derivative_order == 1
+            weights = D1_21_weights()
+            # forw and back weights
+            weights_forw = D1_21_weights_forw()
+            weights_back = D1_21_weights_back()
+        elseif derivative_order == 2
+            weights = D2_21_weights()
+            # forw and back weights
+            weights_forw = D2_21_weights_forw()
+            weights_back = D2_21_weights_back()
+        else
+            error("derivative_order not implemented yet")
+        end
+    #elseif approximation_order == 4
+        #if derivative_order == 1
+        #    weights = D1_42_weights()
+        #elseif derivative_order == 2
+        #    weights = D2_42_weights()
+        #else
+        #    error("derivative_order not implemented yet")
+        #end
+    else
+        error("approximation_order not implemented yet")
+    end
+
+    stencil_coefs = (1/dx^derivative_order) .* weights
+
+    # the following are the same for periodic BC
+    stencil_coefs_forw = (1/dx^derivative_order) .* weights_forw
+    stencil_coefs_back = (1/dx^derivative_order) .* weights_back
+
+    FiniteDiffDeriv{T,N,T,typeof(stencil_coefs)}(derivative_order, approximation_order,
+                                                 dx, len, stencil_length, stencil_length_bd,
+                                                 stencil_coefs,stencil_coefs_forw, stencil_coefs_back)
+end
+
+Non_periodic_FD(args...) = Non_periodic_FD{1}(args...)
 
 struct ChebDeriv{N} end
 
@@ -91,16 +165,37 @@ ChebDeriv(args...) = ChebDeriv{1}(args...)
     N      = A.len
     coeffs = A.stencil_coefs
     mid    = div(A.stencil_length, 2) + 1
-
+    # forw and back coeffs
+    coeffs_forw = A.stencil_coefs_forw
+    coeffs_back = A.stencil_coefs_back
+    
     # note: without the assumption of periodicity this needs to be adapted
-    idx  = 1 + mod(j - i + mid - 1, N)
+    if j > 1 && j < N # centered stencils
+        idx  = 1 + mod(j - i + mid - 1, N)
+        
+        if idx < 1 || idx > A.stencil_length
+            return 0.0
+        else
+            return coeffs[idx]
+        end
+    elseif j == 1 # forward stencil
+        idx = i
 
-    if idx < 1 || idx > A.stencil_length
-        return 0.0
-    else
-        return coeffs[idx]
+        if idx > A.stencil_length_bd
+            return 0.0
+        else
+            return coeffs_forw[idx]
+        end
+    else # backward stencil; counting from the back to the front of the row
+        idx = 1 + j - i
+        if idx > A.stencil_length_bd
+            return 0.0
+        else
+            return coeffs_back[end - idx - 1]
+        end
     end
 end
+
 
 @inline Base.getindex(A::FiniteDiffDeriv, i::Int, ::Colon) =
     [A[i,j] for j in 1:A.len]
@@ -115,29 +210,56 @@ function (A::FiniteDiffDeriv{T,N,T2,S})(f::AbstractArray{T,M},
     # make sure axis of differentiation is contained in the dimensions of f
     @assert N <= M
 
-    coeffs = A.stencil_coefs
+    coeffs      = A.stencil_coefs
+    coeffs_forw = A.stencil_coefs_forw
+    coeffs_back = A.stencil_coefs_back
     mid = div(A.stencil_length, 2) + 1
     i   = idx[N] # point where derivative will be taken (with respect to the N-axis)
 
     sum_i = zero(T)
 
-    if mid <= i <= (A.len-mid+1)
-        @fastmath @inbounds for aa in 1:A.stencil_length
-            i_circ = i - (mid - aa)
-            I = Base.setindex(idx, i_circ, N)
+    if A.stencil_coefs_forw == A.stencil_coefs && A.stencil_coefs_back == A.stencil_coefs 
+        if mid <= i <= (A.len-mid+1)
+            @fastmath @inbounds for aa in 1:A.stencil_length
+                i_circ = i - (mid - aa)
+                I = Base.setindex(idx, i_circ, N)
 
-            sum_i += coeffs[aa] * f[I...]
+                sum_i += coeffs[aa] * f[I...]
+            end
+        else
+            @fastmath @inbounds for aa in 1:A.stencil_length
+                # imposing periodicity
+                i_circ = 1 + mod(i - (mid-aa) - 1, A.len)
+                I = Base.setindex(idx, i_circ, N)
+
+                sum_i += coeffs[aa] * f[I...]
+            end
         end
     else
-        @fastmath @inbounds for aa in 1:A.stencil_length
-            # imposing periodicity
-            i_circ = 1 + mod(i - (mid-aa) - 1, A.len)
-            I = Base.setindex(idx, i_circ, N)
+        if mid <= i <= (A.len-mid+1)
+            @fastmath @inbounds for aa in 1:A.stencil_length
+                i_circ = i - (mid - aa)
+                I = Base.setindex(idx, i_circ, N)
 
-            sum_i += coeffs[aa] * f[I...]
+                sum_i += coeffs[aa] * f[I...]
+            end
+        elseif i < mid # forward stencil
+            @fastmath @inbounds for aa in 1:A.stencil_length_bd
+                i_circ = i - 1 + aa
+                I = Base.setindex(idx, i_circ, N)
+
+                sum_i += coeffs_forw[aa] * f[I...]
+            end
+        else # backward stencil
+            @fastmath @inbounds for aa in 1:A.stencil_length_bd
+                i_circ = i - A.stencil_length_bd + aa
+                I = Base.setindex(idx, i_circ, N)
+
+                sum_i += coeffs_back[aa] * f[I...]
+            end            
         end
     end
-
+        
     sum_i
 end
 
@@ -238,6 +360,8 @@ end
 
 # now for cross-derivatives. we assume that A acts on the first and B on the
 # second axis of the x Matrix.
+
+# TODO: implement non periodic FD counting below
 
 function (A::FiniteDiffDeriv{T,N1,T2,S})(B::FiniteDiffDeriv{T,N2,T2,S}, x::AbstractMatrix{T},
                                          i::Int, j::Int) where {T<:Real,T2,S,N1,N2}
