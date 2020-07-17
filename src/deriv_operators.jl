@@ -14,7 +14,7 @@ D2_21_weights_forw() = [2.0, -5.0, 4.0, -1.0]
 
 # backward 2nd order stencil for 1st and 2nd derivatives
 D1_21_weights_back() = [0.5, -2.0, 1.5]
-D2_21_weighs_back() = [-1.0, 4.0, -5.0, 2.0]
+D2_21_weights_back() = [-1.0, 4.0, -5.0, 2.0]
 
 D1_42_weights() = [ 1.0, -8.0,   0.0,  8.0, -1.0] ./ 12.0
 D2_42_weights() = [-1.0, 16.0, -30.0, 16.0, -1.0] ./ 12.0
@@ -202,6 +202,8 @@ end
 
 @inline Base.getindex(A::SpectralDeriv, i, j) = A.D[i,j]
 
+# CHECK AGAIN THE NESTED ROUTINES FOR 1D FUNCTION BELOW;
+# THEY CAN BE MADE SHORTER; THERE IS A PART REPEATED
 
 # make FiniteDiffDeriv a callable struct, to compute derivatives at a given point
 function (A::FiniteDiffDeriv{T,N,T2,S})(f::AbstractArray{T,M},
@@ -361,43 +363,306 @@ end
 # now for cross-derivatives. we assume that A acts on the first and B on the
 # second axis of the x Matrix.
 
-# TODO: implement non periodic FD counting below
-
 function (A::FiniteDiffDeriv{T,N1,T2,S})(B::FiniteDiffDeriv{T,N2,T2,S}, x::AbstractMatrix{T},
                                          i::Int, j::Int) where {T<:Real,T2,S,N1,N2}
-    NA   = A.len
-    NB   = B.len
-    qA   = A.stencil_coefs
-    qB   = B.stencil_coefs
-    midA = div(A.stencil_length, 2) + 1
-    midB = div(B.stencil_length, 2) + 1
+    NA      = A.len
+    NB      = B.len
+    qA      = A.stencil_coefs
+    qA_forw = A.stencil_coefs_forw
+    qA_back = A.stencil_coefs_back
+    qB      = B.stencil_coefs
+    qB_forw = B.stencil_coefs_forw
+    qB_back = B.stencil_coefs_back
+    midA    = div(A.stencil_length, 2) + 1
+    midB    = div(B.stencil_length, 2) + 1
 
     @assert( (NA, NB) == size(x) )
     @assert( N2 > N1 )
 
     sum_ij = zero(T)
 
-    if midA <= i <= (NA-midA+1) && midB <= j <= (NB-midB+1)
-        @fastmath @inbounds for jj in 1:B.stencil_length
-            j_circ = j - (midB-jj)
-            sum_i  = zero(T)
-            @inbounds for ii in 1:A.stencil_length
-                i_circ = i - (midA-ii)
-                sum_i += qA[ii] * qB[jj] * x[i_circ,j_circ]
+    # A periodic B periodic
+    if qA_forw == qA && qB_forw == qB
+        if midA <= i <= (NA-midA+1) && midB <= j <= (NB-midB+1)
+            @fastmath @inbounds for jj in 1:B.stencil_length
+                j_circ = j - (midB-jj)
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length
+                    i_circ = i - (midA-ii)
+                    sum_i += qA[ii] * qB[jj] * x[i_circ,j_circ]
+                end
+                sum_ij += sum_i
             end
-            sum_ij += sum_i
-        end
-    else
-        @fastmath @inbounds for jj in 1:B.stencil_length
-            # imposing periodicity
-            j_circ = 1 + mod(j - (midB-jj) - 1, NB)
-            sum_i  = zero(T)
-            @inbounds for ii in 1:A.stencil_length
+        else
+            @fastmath @inbounds for jj in 1:B.stencil_length
                 # imposing periodicity
-                i_circ = 1 + mod(i - (midA-ii) - 1, NA)
-                sum_i += qA[ii] * qB[jj] * x[i_circ,j_circ]
+                j_circ = 1 + mod(j - (midB-jj) - 1, NB)
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length
+                    # imposing periodicity
+                    i_circ = 1 + mod(i - (midA-ii) - 1, NA)
+                    sum_i += qA[ii] * qB[jj] * x[i_circ,j_circ]
+                end
+                sum_ij += sum_i
             end
-            sum_ij += sum_i
+        end
+    #end
+
+    # A periodic B non-periodic
+    elseif qA_forw == qA && qB_forw != qB
+        # mid A
+        if midA <= i <= (NA-midA+1)
+            #mid B
+            if  midB <= j <= (NB-midB+1)
+                @fastmath @inbounds for jj in 1:B.stencil_length
+                    j_circ = j - (midB-jj)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length
+                        i_circ = i - (midA-ii)
+                        sum_i += qA[ii] * qB[jj] * x[i_circ,j_circ]
+                    end
+                    sum_ij += sum_i
+                end
+            # forw B
+            elseif j < midB
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = j - 1 + jj
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length
+                        i_circ = i - (midA-ii)
+                        sum_i += qA[ii] * qB_forw[jj] * x[i_circ,j_circ]
+                    end
+                    sum_ij += sum_i
+                end
+            # back B
+            else
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = j - B.stencil_length_bd + jj
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length
+                        i_circ = i - (midA-ii)
+                        sum_i += qA[ii] * qB_back[jj] * x[i_circ,j_circ]
+                    end
+                    sum_ij += sum_i
+                end
+            end
+        # boundaries of A
+        else
+            #mid B
+            if  midB <= j <= (NB-midB+1)
+                @fastmath @inbounds for jj in 1:B.stencil_length
+                    j_circ = j - (midB-jj)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ =1 + mod(i - (midA-ii) - 1, NA)
+                        sum_i += qA[ii] * qB[jj] * x[i_circ,j_circ]
+                    end
+                    sum_ij += sum_i
+                end
+            # forw B
+            elseif j < midB
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = j - 1 + jj
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ = 1 + mod(i - (midA-ii) - 1, NA)
+                        sum_i += qA[ii] * qB_forw[jj] * x[i_circ,j_circ]
+                    end
+                    sum_ij += sum_i
+                end
+            # back B
+            else
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = j - B.stencil_length_bd + jj
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ = 1 + mod(i - (midA-ii) - 1, NA)
+                        sum_i += qA[ii] * qB_back[jj] * x[i_circ,j_circ]
+                    end
+                    sum_ij += sum_i
+                end
+            end
+        end
+    #end
+
+    # A non-periodic B periodic
+    elseif qA_forw != qA && qB_forw == qB
+        # mid B
+        if midB <= j <= (NB-midB+1)
+            #mid A
+            if  midA <= i <= (NA-midA+1)
+                @fastmath @inbounds for jj in 1:B.stencil_length
+                    j_circ = j - (midB-jj)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length
+                        i_circ = i - (midA-ii)
+                        sum_i += qA[ii] * qB[jj] * x[i_circ,j_circ]
+                    end
+                    sum_ij += sum_i
+                end
+            # forw A
+            elseif i < midA
+                @fastmath @inbounds for jj in 1:B.stencil_length
+                    j_circ = j - (midB-jj)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ = i - 1 + ii
+                        sum_i += qA_forw[ii] * qB[jj] * x[i_circ,j_circ]
+                    end
+                    sum_ij += sum_i
+                end
+            # back A
+            else
+                @fastmath @inbounds for jj in 1:B.stencil_length
+                    j_circ = j - (midB-jj)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ = i - A.stencil_length_bd + ii
+                        sum_i += qA_back[ii] * qB[jj] * x[i_circ,j_circ]
+                    end
+                    sum_ij += sum_i
+                end
+            end
+        # boundaries of B
+        else
+            #mid A
+            if  midA <= i <= (NA-midA+1)
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = 1 + mod(j - (midB-jj) - 1, NB)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length
+                        i_circ = i - (midA-ii)
+                        sum_i += qA[ii] * qB[jj] * x[i_circ,j_circ]
+                    end
+                    sum_ij += sum_i
+                end
+            # forw A
+            elseif i < midA
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = 1 + mod(j - (midB-jj) - 1, NB)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ =  i - 1 + ii
+                        sum_i += qA_forw[ii] * qB[jj] * x[i_circ,j_circ]
+                    end
+                    sum_ij += sum_i
+                end
+            # back A
+            else
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = 1 + mod(j - (midB-jj) - 1, NB)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ = i - A.stencil_length_bd + ii
+                        sum_i += qA_back[ii] * qB[jj] * x[i_circ,j_circ]
+                    end
+                    sum_ij += sum_i
+                end
+            end
+        end
+    #end
+
+    # A non-periodic B non-periodic
+    elseif qA_forw != qA && qB_forw != qB
+        # mid A mid B
+        if midA <= i <= (NA-midA+1) && midB <= j <= (NB-midB+1)
+            @fastmath @inbounds for jj in 1:B.stencil_length
+                j_circ = j - (midB-jj)
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length
+                    i_circ = i - (midA-ii)
+                    sum_i += qA[ii] * qB[jj] * x[i_circ,j_circ]
+                end
+                sum_ij += sum_i
+            end
+        # mid A forw B
+        elseif midA <= i <= (NA-midA+1) && j < midB
+            @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                j_circ = j - 1 + jj
+                sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length
+                        i_circ = i - (midA-ii)
+                        sum_i += qA[ii] * qB_forw[jj] * x[i_circ,j_circ]
+                    end
+                sum_ij += sum_i
+            end
+        # mid A back B
+        elseif midA <= i <= (NA-midA+1) && (NB-midB+1) < j
+            @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                j_circ = j - B.stencil_length_bd + jj
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length
+                    i_circ = i - (midA-ii)
+                    sum_i += qA[ii] * qB_back[jj] * x[i_circ,j_circ]
+                end
+                sum_ij += sum_i
+            end
+        # forw A mid B
+        elseif i < midA && midB <= j <= (NB-midB+1)
+            @fastmath @inbounds for jj in 1:B.stencil_length
+                j_circ =  j - (midB-jj)
+                sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ = i - 1 + ii
+                        sum_i += qA_forw[ii] * qB[jj] * x[i_circ,j_circ]
+                    end
+                sum_ij += sum_i
+            end
+        # back A mid B
+        elseif (NA-midA+1) < i && midB <= j <= (NB-midB+1)
+            @fastmath @inbounds for jj in 1:B.stencil_length
+                j_circ = j - (midB-jj)
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length_bd
+                    i_circ = i - A.stencil_length_bd + ii
+                    sum_i += qA_back[ii] * qB[jj] * x[i_circ,j_circ]
+                end
+                sum_ij += sum_i
+            end
+        # forw A forw B
+        elseif i < midA && j < midB
+            @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                j_circ =  j - 1 + jj
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length_bd
+                    i_circ = i - 1 + ii
+                    sum_i += qA_forw[ii] * qB_forw[jj] * x[i_circ,j_circ]
+                end
+                sum_ij += sum_i
+            end
+        # back A back B
+        elseif (NA-midA+1) < i && (NB-midB+1) < j
+            @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                j_circ =  j - B.stencil_length_bd + jj
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length_bd
+                    i_circ = i - A.stencil_length_bd + ii
+                    sum_i += qA_back[ii] * qB_back[jj] * x[i_circ,j_circ]
+                end
+                sum_ij += sum_i
+            end
+        # forw A back B
+        elseif i < midA && (NB-midB+1) < j
+            @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                j_circ =  j - B.stencil_length_bd + jj
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length_bd
+                    i_circ = i - 1 + ii
+                    sum_i += qA_forw[ii] * qB_back[jj] * x[i_circ,j_circ]
+                end
+                sum_ij += sum_i
+            end
+        # back A forw B
+        elseif (NA-midA+1) < i && j < midB
+            @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                j_circ = j - 1 + jj
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length_bd
+                    i_circ = i - A.stencil_length_bd + ii
+                    sum_i += qA_back[ii] * qB_forw[jj] * x[i_circ,j_circ]
+                end
+                sum_ij += sum_i
+            end
         end
     end
 
@@ -409,12 +674,17 @@ end
 function (A::FiniteDiffDeriv{T,N1,T2,S})(B::FiniteDiffDeriv{T,N2,T2,S},
                                          f::AbstractArray{T,M},
                                          idx::Vararg{Int,M}) where {T<:Real,T2,S,N1,N2,M}
-    NA   = A.len
-    NB   = B.len
-    qA   = A.stencil_coefs
-    qB   = B.stencil_coefs
-    midA = div(A.stencil_length, 2) + 1
-    midB = div(B.stencil_length, 2) + 1
+
+    NA      = A.len
+    NB      = B.len
+    qA      = A.stencil_coefs
+    qA_forw = A.stencil_coefs_forw
+    qA_back = A.stencil_coefs_back
+    qB      = B.stencil_coefs
+    qB_forw = B.stencil_coefs_forw
+    qB_back = B.stencil_coefs_back
+    midA    = div(A.stencil_length, 2) + 1
+    midB    = div(B.stencil_length, 2) + 1
 
     # make sure axes of differentiation are contained in the dimensions of f
     @assert N1 < N2 <= M
@@ -425,37 +695,339 @@ function (A::FiniteDiffDeriv{T,N1,T2,S})(B::FiniteDiffDeriv{T,N2,T2,S},
 
     sum_ij = zero(T)
 
-    if midA <= i <= (NA-midA+1) && midB <= j <= (NB-midB+1)
-        @fastmath @inbounds for jj in 1:B.stencil_length
-            j_circ = j - (midB-jj)
-            Itmp   = Base.setindex(idx, j_circ, N2)
-            sum_i  = zero(T)
-            @inbounds for ii in 1:A.stencil_length
-                i_circ = i - (midA-ii)
-                I      = Base.setindex(Itmp, i_circ, N1)
-                sum_i += qA[ii] * qB[jj] * f[I...]
+    # A periodic B periodic
+    if qA_forw == qA && qB_forw == qB
+        if midA <= i <= (NA-midA+1) && midB <= j <= (NB-midB+1)
+            @fastmath @inbounds for jj in 1:B.stencil_length
+                j_circ = j - (midB-jj)
+                Itmp   = Base.setindex(idx, j_circ, N2)
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length
+                    i_circ = i - (midA-ii)
+                    I      = Base.setindex(Itmp, i_circ, N1)
+                    sum_i += qA[ii] * qB[jj] * f[I...]
+                end
+                sum_ij += sum_i
             end
-            sum_ij += sum_i
-        end
-    else
-        @fastmath @inbounds for jj in 1:B.stencil_length
-            # imposing periodicity
-            j_circ = 1 + mod(j - (midB-jj) - 1, NB)
-            Itmp   = Base.setindex(idx, j_circ, N2)
-            sum_i  = zero(T)
-            @inbounds for ii in 1:A.stencil_length
+        else
+            @fastmath @inbounds for jj in 1:B.stencil_length
                 # imposing periodicity
-                i_circ = 1 + mod(i - (midA-ii) - 1, NA)
-                I      = Base.setindex(Itmp, i_circ, N1)
-                sum_i += qA[ii] * qB[jj] * f[I...]
+                j_circ = 1 + mod(j - (midB-jj) - 1, NB)
+                Itmp   = Base.setindex(idx, j_circ, N2)
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length
+                    # imposing periodicity
+                    i_circ = 1 + mod(i - (midA-ii) - 1, NA)
+                    I      = Base.setindex(Itmp, i_circ, N1)
+                    sum_i += qA[ii] * qB[jj] * f[I...]
+                end
+                sum_ij += sum_i
             end
-            sum_ij += sum_i
+        end
+    #end
+
+    # A periodic B non-periodic
+    elseif qA_forw == qA && qB_forw != qB
+        # mid A
+        if midA <= i <= (NA-midA+1)
+            #mid B
+            if  midB <= j <= (NB-midB+1)
+                @fastmath @inbounds for jj in 1:B.stencil_length
+                    j_circ = j - (midB-jj)
+                    Itmp   = Base.setindex(idx, j_circ, N2)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length
+                        i_circ = i - (midA-ii)
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA[ii] * qB[jj] * f[I...]
+                    end
+                    sum_ij += sum_i
+                end
+            # forw B
+            elseif j < midB
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = j - 1 + jj
+                    Itmp   = Base.setindex(idx, j_circ, N2)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length
+                        i_circ = i - (midA-ii)
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA[ii] * qB_forw[jj] * f[I...]
+                    end
+                    sum_ij += sum_i
+                end
+            # back B
+            else
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = j - B.stencil_length_bd + jj
+                    Itmp   = Base.setindex(idx, j_circ, N2)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length
+                        i_circ = i - (midA-ii)
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA[ii] * qB_back[jj] * f[I...]
+                    end
+                    sum_ij += sum_i
+                end
+            end
+        # boundaries of A
+        else
+            #mid B
+            if  midB <= j <= (NB-midB+1)
+                @fastmath @inbounds for jj in 1:B.stencil_length
+                    j_circ = j - (midB-jj)
+                    Itmp   = Base.setindex(idx, j_circ, N2)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ =1 + mod(i - (midA-ii) - 1, NA)
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA[ii] * qB[jj] * f[I...]
+                    end
+                    sum_ij += sum_i
+                end
+            # forw B
+            elseif j < midB
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = j - 1 + jj
+                    Itmp   = Base.setindex(idx, j_circ, N2)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ = 1 + mod(i - (midA-ii) - 1, NA)
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA[ii] * qB_forw[jj] * f[I...]
+                    end
+                    sum_ij += sum_i
+                end
+            # back B
+            else
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = j - B.stencil_length_bd + jj
+                    Itmp   = Base.setindex(idx, j_circ, N2)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ = 1 + mod(i - (midA-ii) - 1, NA)
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA[ii] * qB_back[jj] * f[I...]
+                    end
+                    sum_ij += sum_i
+                end
+            end
+        end
+    #end
+
+    # A non-periodic B periodic
+    elseif qA_forw != qA && qB_forw == qB
+        # mid B
+        if midB <= j <= (NB-midB+1)
+            #mid A
+            if  midA <= i <= (NA-midA+1)
+                @fastmath @inbounds for jj in 1:B.stencil_length
+                    j_circ = j - (midB-jj)
+                    Itmp   = Base.setindex(idx, j_circ, N2)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length
+                        i_circ = i - (midA-ii)
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA[ii] * qB[jj] * f[I...]
+                    end
+                    sum_ij += sum_i
+                end
+            # forw A
+            elseif i < midA
+                @fastmath @inbounds for jj in 1:B.stencil_length
+                    j_circ = j - (midB-jj)
+                    Itmp   = Base.setindex(idx, j_circ, N2)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ = i - 1 + ii
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA_forw[ii] * qB[jj] * f[I...]
+                    end
+                    sum_ij += sum_i
+                end
+            # back A
+            else
+                @fastmath @inbounds for jj in 1:B.stencil_length
+                    j_circ = j - (midB-jj)
+                    Itmp   = Base.setindex(idx, j_circ, N2)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ = i - A.stencil_length_bd + ii
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA_back[ii] * qB[jj] * f[I...]
+                    end
+                    sum_ij += sum_i
+                end
+            end
+        # boundaries of B
+        else
+            #mid A
+            if  midA <= i <= (NA-midA+1)
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = 1 + mod(j - (midB-jj) - 1, NB)
+                    Itmp   = Base.setindex(idx, j_circ, N2)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length
+                        i_circ = i - (midA-ii)
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA[ii] * qB[jj] * f[I...]
+                    end
+                    sum_ij += sum_i
+                end
+            # forw A
+            elseif i < midA
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = 1 + mod(j - (midB-jj) - 1, NB)
+                    Itmp   = Base.setindex(idx, j_circ, N2)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ =  i - 1 + ii
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA_forw[ii] * qB[jj] * f[I...]
+                    end
+                    sum_ij += sum_i
+                end
+            # back A
+            else
+                @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                    j_circ = 1 + mod(j - (midB-jj) - 1, NB)
+                    Itmp   = Base.setindex(idx, j_circ, N2)
+                    sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ = i - A.stencil_length_bd + ii
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA_back[ii] * qB[jj] * f[I...]
+                    end
+                    sum_ij += sum_i
+                end
+            end
+        end
+    #end
+
+    # A non-periodic B non-periodic
+    elseif qA_forw != qA && qB_forw != qB
+        # mid A mid B
+        if midA <= i <= (NA-midA+1) && midB <= j <= (NB-midB+1)
+            @fastmath @inbounds for jj in 1:B.stencil_length
+                j_circ = j - (midB-jj)
+                Itmp   = Base.setindex(idx, j_circ, N2)
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length
+                    i_circ = i - (midA-ii)
+                    I      = Base.setindex(Itmp, i_circ, N1)
+                    sum_i += qA[ii] * qB[jj] * f[I...]
+                end
+                sum_ij += sum_i
+            end
+        # mid A forw B
+        elseif midA <= i <= (NA-midA+1) && j < midB
+            @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                j_circ = j - 1 + jj
+                Itmp   = Base.setindex(idx, j_circ, N2)
+                sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length
+                        i_circ = i - (midA-ii)
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA[ii] * qB_forw[jj] * f[I...]
+                    end
+                sum_ij += sum_i
+            end
+        # mid A back B
+        elseif midA <= i <= (NA-midA+1) && (NB-midB+1) < j
+            @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                j_circ = j - B.stencil_length_bd + jj
+                Itmp   = Base.setindex(idx, j_circ, N2)
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length
+                    i_circ = i - (midA-ii)
+                    I      = Base.setindex(Itmp, i_circ, N1)
+                    sum_i += qA[ii] * qB_back[jj] * f[I...]
+                end
+                sum_ij += sum_i
+            end
+        # forw A mid B
+        elseif i < midA && midB <= j <= (NB-midB+1)
+            @fastmath @inbounds for jj in 1:B.stencil_length
+                j_circ =  j - (midB-jj)
+                Itmp   = Base.setindex(idx, j_circ, N2)
+                sum_i  = zero(T)
+                    @inbounds for ii in 1:A.stencil_length_bd
+                        i_circ = i - 1 + ii
+                        I      = Base.setindex(Itmp, i_circ, N1)
+                        sum_i += qA_forw[ii] * qB[jj] * f[I...]
+                    end
+                sum_ij += sum_i
+            end
+        # back A mid B
+        elseif (NA-midA+1) < i && midB <= j <= (NB-midB+1)
+            @fastmath @inbounds for jj in 1:B.stencil_length
+                j_circ = j - (midB-jj)
+                Itmp   = Base.setindex(idx, j_circ, N2)
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length_bd
+                    i_circ = i - A.stencil_length_bd + ii
+                    I      = Base.setindex(Itmp, i_circ, N1)
+                    sum_i += qA_back[ii] * qB[jj] * f[I...]
+                end
+                sum_ij += sum_i
+            end
+        # forw A forw B
+        elseif i < midA && j < midB
+            @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                j_circ =  j - 1 + jj
+                Itmp   = Base.setindex(idx, j_circ, N2)
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length_bd
+                    i_circ = i - 1 + ii
+                    I      = Base.setindex(Itmp, i_circ, N1)
+                    sum_i += qA_forw[ii] * qB_forw[jj] * f[I...]
+                end
+                sum_ij += sum_i
+            end
+        # back A back B
+        elseif (NA-midA+1) < i && (NB-midB+1) < j
+            @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                j_circ =  j - B.stencil_length_bd + jj
+                Itmp   = Base.setindex(idx, j_circ, N2)
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length_bd
+                    i_circ = i - A.stencil_length_bd + ii
+                    I      = Base.setindex(Itmp, i_circ, N1)
+                    sum_i += qA_back[ii] * qB_back[jj] * f[I...]
+                end
+                sum_ij += sum_i
+            end
+        # forw A back B
+        elseif i < midA && (NB-midB+1) < j
+            @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                j_circ =  j - B.stencil_length_bd + jj
+                Itmp   = Base.setindex(idx, j_circ, N2)
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length_bd
+                    i_circ = i - 1 + ii
+                    I      = Base.setindex(Itmp, i_circ, N1)
+                    sum_i += qA_forw[ii] * qB_back[jj] * f[I...]
+                end
+                sum_ij += sum_i
+            end
+        # back A forw B
+        elseif (NA-midA+1) < i && j < midB
+            @fastmath @inbounds for jj in 1:B.stencil_length_bd
+                j_circ = j - 1 + jj
+                Itmp   = Base.setindex(idx, j_circ, N2)
+                sum_i  = zero(T)
+                @inbounds for ii in 1:A.stencil_length_bd
+                    i_circ = i - A.stencil_length_bd + ii
+                    I      = Base.setindex(Itmp, i_circ, N1)
+                    sum_i += qA_back[ii] * qB_forw[jj] * f[I...]
+                end
+                sum_ij += sum_i
+            end
         end
     end
 
     sum_ij
 end
-
 
 # Casting to matrix types
 
