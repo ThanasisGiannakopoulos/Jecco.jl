@@ -168,32 +168,45 @@ ChebDeriv(args...) = ChebDeriv{1}(args...)
     # forw and back coeffs
     coeffs_forw = A.stencil_coefs_forw
     coeffs_back = A.stencil_coefs_back
-    
-    # note: without the assumption of periodicity this needs to be adapted
-    if j > 1 && j < N # centered stencils
+
+    # A periodic
+    if coeffs_forw == coeffs
         idx  = 1 + mod(j - i + mid - 1, N)
-        
         if idx < 1 || idx > A.stencil_length
             return 0.0
         else
             return coeffs[idx]
         end
-    elseif j == 1 # forward stencil
-        idx = i
 
-        if idx > A.stencil_length_bd
-            return 0.0
-        else
-            return coeffs_forw[idx]
-        end
-    else # backward stencil; counting from the back to the front of the row
-        idx = 1 + j - i
-        if idx > A.stencil_length_bd
-            return 0.0
-        else
-            return coeffs_back[end - idx - 1]
+    # A non-periodic
+    else
+        # centered stencils
+        if i > 1 && i < N 
+            idx  = 1 + mod(j - i + mid - 1, N)
+            if idx < 1 || idx > A.stencil_length
+                return 0.0
+            else
+                return coeffs[idx]
+            end
+        # forward stencil        
+        elseif i == 1 
+            idx = j
+            if idx > A.stencil_length_bd
+                return 0.0
+            else
+                return coeffs_forw[idx]
+            end
+        # backward stencil; counting from the back to the front of the row        
+        else #if i == N
+            idx = N - j + 1 
+            if idx > A.stencil_length_bd
+                return 0.0
+            else
+                return coeffs_back[end - idx + 1]
+            end
         end
     end
+    
 end
 
 
