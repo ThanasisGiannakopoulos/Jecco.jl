@@ -1,3 +1,6 @@
+# DEBUG=0 to supress debug info
+DEBUG = 1
+using HDF5
 
 function compute_coeffs_AH!(sigma::Array, gauge::Gauge, cache::HorizonCache,
                             sys::System{Outer})
@@ -99,6 +102,9 @@ function compute_coeffs_AH!(sigma::Array, gauge::Gauge, cache::HorizonCache,
             Fx_x    = Dx(Fx_uAH,   1,i,j) - Du_Fx_uAH[1,i,j] * sigma0_x
             Fy_x    = Dx(Fy_uAH,   1,i,j) - Du_Fy_uAH[1,i,j] * sigma0_x
             Sd_x    = Dx(Sd_uAH,   1,i,j) - Du_Sd_uAH[1,i,j] * sigma0_x
+            # if j == 1
+            #     @show Sd_x
+            # end
 
             B1_y    = Dy(B1_uAH,   1,i,j) - Du_B1_uAH[1,i,j] * sigma0_y
             B2_y    = Dy(B2_uAH,   1,i,j) - Du_B2_uAH[1,i,j] * sigma0_y
@@ -245,6 +251,67 @@ function find_AH!(sigma::Array, bulkconstrain::BulkConstrained,
     # start relaxation method
     it = 0
     while true
+        
+        ##########################################################################
+        sigma0      = zeros(1,Nx,Ny)
+        sigma0_x    = zeros(1,Nx,Ny)
+        sigma0_y    = zeros(1,Nx,Ny)
+        sigma0_xx   = zeros(1,Nx,Ny)
+        sigma0_yy   = zeros(1,Nx,Ny)
+        sigma0_xy   = zeros(1,Nx,Ny)
+        xi          = zeros(1,Nx,Ny)
+        xi_x        = zeros(1,Nx,Ny)
+        xi_y        = zeros(1,Nx,Ny)
+        xi_xx       = zeros(1,Nx,Ny)
+        xi_yy       = zeros(1,Nx,Ny)
+        xi_xy       = zeros(1,Nx,Ny)
+        B1          = zeros(1,Nx,Ny)
+        B2          = zeros(1,Nx,Ny)
+        G           = zeros(1,Nx,Ny)
+        S           = zeros(1,Nx,Ny)
+        Fx          = zeros(1,Nx,Ny)
+        Fy          = zeros(1,Nx,Ny)
+        Sd          = zeros(1,Nx,Ny)
+        B1p         = zeros(1,Nx,Ny)
+        B2p         = zeros(1,Nx,Ny)
+        Gp          = zeros(1,Nx,Ny)
+        Sp          = zeros(1,Nx,Ny)
+        Fxp         = zeros(1,Nx,Ny)
+        Fyp         = zeros(1,Nx,Ny)
+        Sdp         = zeros(1,Nx,Ny)
+        B1pp        = zeros(1,Nx,Ny)
+        B2pp        = zeros(1,Nx,Ny)
+        Gpp         = zeros(1,Nx,Ny)
+        Spp         = zeros(1,Nx,Ny)
+        Fxpp        = zeros(1,Nx,Ny)
+        Fypp        = zeros(1,Nx,Ny)
+        B1_x        = zeros(1,Nx,Ny)
+        B2_x        = zeros(1,Nx,Ny)
+        G_x         = zeros(1,Nx,Ny)
+        S_x         = zeros(1,Nx,Ny)
+        Fx_x        = zeros(1,Nx,Ny)
+        Fy_x        = zeros(1,Nx,Ny)
+        Sd_x        = zeros(1,Nx,Ny)
+        B1_y        = zeros(1,Nx,Ny)
+        B2_y        = zeros(1,Nx,Ny)
+        G_y         = zeros(1,Nx,Ny)
+        S_y         = zeros(1,Nx,Ny)
+        Fx_y        = zeros(1,Nx,Ny)
+        Fy_y        = zeros(1,Nx,Ny)
+        Sd_y        = zeros(1,Nx,Ny)
+        B1p_x       = zeros(1,Nx,Ny)
+        B2p_x       = zeros(1,Nx,Ny)
+        Gp_x        = zeros(1,Nx,Ny)
+        Sp_x        = zeros(1,Nx,Ny)
+        Fxp_x       = zeros(1,Nx,Ny)
+        Fyp_x       = zeros(1,Nx,Ny)
+        B1p_y       = zeros(1,Nx,Ny)
+        B2p_y       = zeros(1,Nx,Ny)
+        Gp_y        = zeros(1,Nx,Ny)
+        Sp_y        = zeros(1,Nx,Ny)
+        Fxp_y       = zeros(1,Nx,Ny)
+        Fyp_y       = zeros(1,Nx,Ny)
+        #########################################################################    
 
         # interpolate bulk functions (and u-derivatives) to the u = 1/r = sigma surface
         @inbounds Threads.@threads for j in 1:Ny
@@ -276,8 +343,96 @@ function find_AH!(sigma::Array, bulkconstrain::BulkConstrained,
                 Duu_S_uAH[1,i,j]    = interp(view(deriv.Duu_S,   :,i,j))(uAH)
                 Duu_Fx_uAH[1,i,j]   = interp(view(deriv.Duu_Fx,  :,i,j))(uAH)
                 Duu_Fy_uAH[1,i,j]   = interp(view(deriv.Duu_Fy,  :,i,j))(uAH)
+
             end
         end
+
+        @inbounds Threads.@threads for j in 1:Ny
+            @inbounds for i in 1:Nx
+
+                uAH = sigma[1,i,j]
+                u2    = uAH * uAH
+                u3    = uAH * uAH * uAH
+                u4    = uAH * uAH * uAH * uAH
+
+                xi[1,i,j]    = gauge.xi[1,i,j]
+                xi_x[1,i,j]  = Dx(gauge.xi, 1,i,j)
+                xi_y[1,i,j]  = Dy(gauge.xi, 1,i,j)
+                xi_xx[1,i,j] = Dxx(gauge.xi, 1,i,j)
+                xi_yy[1,i,j] = Dyy(gauge.xi, 1,i,j)
+                xi_xy[1,i,j] = Dx(Dy, gauge.xi, 1,i,j)
+
+                sigma0[1,i,j]   = sigma[1,i,j]
+                sigma0_x[1,i,j]  = Dx(sigma, 1,i,j)
+                sigma0_y[1,i,j]  = Dy(sigma, 1,i,j)
+                sigma0_xx[1,i,j] = Dxx(sigma, 1,i,j)
+                sigma0_yy[1,i,j] = Dyy(sigma, 1,i,j)
+                sigma0_xy[1,i,j] = Dx(Dy, sigma, 1,i,j)
+
+                B1[1,i,j]    = B1_uAH[1,i,j]
+                B2[1,i,j]    = B2_uAH[1,i,j]
+                G[1,i,j]     = G_uAH[1,i,j]
+                S[1,i,j]     = S_uAH[1,i,j]
+                Fx[1,i,j]    = Fx_uAH[1,i,j]
+                Fy[1,i,j]    = Fy_uAH[1,i,j]
+                Sd[1,i,j]    = Sd_uAH[1,i,j]
+
+                # r derivatives
+
+                B1p[1,i,j]        = -u2 * Du_B1_uAH[1,i,j]
+                B2p[1,i,j]        = -u2 * Du_B2_uAH[1,i,j]
+                Gp[1,i,j]         = -u2 * Du_G_uAH[1,i,j]
+                Sp[1,i,j]         = -u2 * Du_S_uAH[1,i,j]
+                Fxp[1,i,j]        = -u2 * Du_Fx_uAH[1,i,j]
+                Fyp[1,i,j]        = -u2 * Du_Fy_uAH[1,i,j]
+                Sdp[1,i,j]        = -u2 * Du_Sd_uAH[1,i,j]
+
+                B1pp[1,i,j]       = 2*u3 * Du_B1_uAH[1,i,j]  + u4 * Duu_B1_uAH[1,i,j]
+                B2pp[1,i,j]       = 2*u3 * Du_B2_uAH[1,i,j]  + u4 * Duu_B2_uAH[1,i,j]
+                Gpp[1,i,j]        = 2*u3 * Du_G_uAH[1,i,j]   + u4 * Duu_G_uAH[1,i,j]
+                Spp[1,i,j]        = 2*u3 * Du_S_uAH[1,i,j]   + u4 * Duu_S_uAH[1,i,j]
+                Fxpp[1,i,j]       = 2*u3 * Du_Fx_uAH[1,i,j]  + u4 * Duu_Fx_uAH[1,i,j]
+                Fypp[1,i,j]       = 2*u3 * Du_Fy_uAH[1,i,j]  + u4 * Duu_Fy_uAH[1,i,j]
+
+                # x and y derivatives
+
+                B1_x[1,i,j]    = Dx(B1_uAH,   1,i,j) - Du_B1_uAH[1,i,j] * sigma0_x[1,i,j]
+                B2_x[1,i,j]    = Dx(B2_uAH,   1,i,j) - Du_B2_uAH[1,i,j] * sigma0_x[1,i,j]
+                G_x[1,i,j]     = Dx(G_uAH,    1,i,j) -  Du_G_uAH[1,i,j] * sigma0_x[1,i,j]
+                S_x[1,i,j]     = Dx(S_uAH,    1,i,j) -  Du_S_uAH[1,i,j] * sigma0_x[1,i,j]
+                Fx_x[1,i,j]    = Dx(Fx_uAH,   1,i,j) - Du_Fx_uAH[1,i,j] * sigma0_x[1,i,j]
+                Fy_x[1,i,j]    = Dx(Fy_uAH,   1,i,j) - Du_Fy_uAH[1,i,j] * sigma0_x[1,i,j]
+                Sd_x[1,i,j]    = Dx(Sd_uAH,   1,i,j) - Du_Sd_uAH[1,i,j] * sigma0_x[1,i,j]
+
+                # if j==1
+                #     @show Sd_x[1,i,j] 
+                # end
+                
+                B1_y[1,i,j]    = Dy(B1_uAH,   1,i,j) - Du_B1_uAH[1,i,j] * sigma0_y[1,i,j]
+                B2_y[1,i,j]    = Dy(B2_uAH,   1,i,j) - Du_B2_uAH[1,i,j] * sigma0_y[1,i,j]
+                G_y[1,i,j]     = Dy(G_uAH,    1,i,j) -  Du_G_uAH[1,i,j] * sigma0_y[1,i,j]
+                S_y[1,i,j]     = Dy(S_uAH,    1,i,j) -  Du_S_uAH[1,i,j] * sigma0_y[1,i,j]
+                Fx_y[1,i,j]    = Dy(Fx_uAH,   1,i,j) - Du_Fx_uAH[1,i,j] * sigma0_y[1,i,j]
+                Fy_y[1,i,j]    = Dy(Fy_uAH,   1,i,j) - Du_Fy_uAH[1,i,j] * sigma0_y[1,i,j]
+                Sd_y[1,i,j]    = Dy(Sd_uAH,   1,i,j) - Du_Sd_uAH[1,i,j] * sigma0_y[1,i,j]
+
+                B1p_x[1,i,j]   = -u2 * Dx(Du_B1_uAH, 1,i,j) + u2 * sigma0_x[1,i,j] * Duu_B1_uAH[1,i,j]
+                B2p_x[1,i,j]   = -u2 * Dx(Du_B2_uAH, 1,i,j) + u2 * sigma0_x[1,i,j] * Duu_B2_uAH[1,i,j]
+                Gp_x[1,i,j]    = -u2 * Dx(Du_G_uAH,  1,i,j) + u2 * sigma0_x[1,i,j] *  Duu_G_uAH[1,i,j]
+                Sp_x[1,i,j]    = -u2 * Dx(Du_S_uAH,  1,i,j) + u2 * sigma0_x[1,i,j] *  Duu_S_uAH[1,i,j]
+                Fxp_x[1,i,j]   = -u2 * Dx(Du_Fx_uAH, 1,i,j) + u2 * sigma0_x[1,i,j] * Duu_Fx_uAH[1,i,j]
+                Fyp_x[1,i,j]   = -u2 * Dx(Du_Fy_uAH, 1,i,j) + u2 * sigma0_x[1,i,j] * Duu_Fy_uAH[1,i,j]
+
+                B1p_y[1,i,j]   = -u2 * Dy(Du_B1_uAH, 1,i,j) + u2 * sigma0_y[1,i,j] * Duu_B1_uAH[1,i,j]
+                B2p_y[1,i,j]   = -u2 * Dy(Du_B2_uAH, 1,i,j) + u2 * sigma0_y[1,i,j] * Duu_B2_uAH[1,i,j]
+                Gp_y[1,i,j]    = -u2 * Dy(Du_G_uAH,  1,i,j) + u2 * sigma0_y[1,i,j] *  Duu_G_uAH[1,i,j]
+                Sp_y[1,i,j]    = -u2 * Dy(Du_S_uAH,  1,i,j) + u2 * sigma0_y[1,i,j] *  Duu_S_uAH[1,i,j]
+                Fxp_y[1,i,j]   = -u2 * Dy(Du_Fx_uAH, 1,i,j) + u2 * sigma0_y[1,i,j] * Duu_Fx_uAH[1,i,j]
+                Fyp_y[1,i,j]   = -u2 * Dy(Du_Fy_uAH, 1,i,j) + u2 * sigma0_y[1,i,j] * Duu_Fy_uAH[1,i,j]
+
+            end
+        end
+        
 
         # compute axx, ayy, axy, bx, by, cc and res coefficients of the
         # linearized equation (stored in the cache struct)
@@ -287,6 +442,114 @@ function find_AH!(sigma::Array, bulkconstrain::BulkConstrained,
         max_res = maximum(abs.(b_vec))
         println("    $it \t $max_res")
 
+if DEBUG==1
+
+    
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/f0", f0)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/sigma",sigma)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/axx",axx)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/ayy",ayy)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/axy",axy)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/bx",bx)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/by",by)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/cc",cc)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/b_vec",b_vec)
+
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B1_uAH", B1_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B2_uAH", B2_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/G_uAH", G_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/S_uAH", S_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fx_uAH", Fx_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fy_uAH", Fy_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Sd_uAH", Sd_uAH)
+
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Du_B1_uAH", Du_B1_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Du_B2_uAH", Du_B2_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Du_G_uAH", Du_G_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Du_S_uAH", Du_S_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Du_Fx_uAH", Du_Fx_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Du_Fy_uAH", Du_Fy_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Du_Sd_uAH", Du_Sd_uAH)
+    
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Duu_B1_uAH", Duu_B1_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Duu_B2_uAH", Duu_B2_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Duu_G_uAH", Duu_G_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Duu_S_uAH", Duu_S_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Duu_Fx_uAH", Duu_Fx_uAH)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Duu_Fy_uAH", Duu_Fy_uAH)
+
+    ##########################################################################
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/sigma0", sigma0)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/sigma0_x", sigma0_x)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/sigma0_y", sigma0_y)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/sigma0_xx", sigma0_xx)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/sigma0_yy", sigma0_yy)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/sigma0_xy", sigma0_xy)
+
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/xi", xi)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/xi_x", xi_x)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/xi_y", xi_y)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/xi_xx", xi_xx)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/xi_yy", xi_yy)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/xi_xy", xi_xy)
+
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B1", B1)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B2", B2)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/G", G)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/S", S)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fx", Fx)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fy", Fy)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Sd", Sd)
+
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B1p", B1p)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B2p", B2p)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Gp", Gp)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Sp", Sp)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fxp", Fxp)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fyp", Fyp)
+    h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Sdp", Sdp)
+
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B1pp", B1pp)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B2pp", B2pp)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Gpp", Gpp)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Spp", Spp)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fxpp", Fxpp)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fypp", Fypp)
+
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B1_x", B1_x)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B2_x", B2_x)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/G_x", G_x)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/S_x", S_x)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fx_x", Fx_x)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fy_x", Fy_x)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Sd_x", Sd_x)
+
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B1_y", B1_y)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B2_y", B2_y)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/G_y", G_y)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/S_y", S_y)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fx_y", Fx_y)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fy_y", Fy_y)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Sd_y", Sd_y)
+
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B1p_x", B1p_x)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B2p_x", B2p_x)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Gp_x", Gp_x)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Sp_x", Sp_x)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fxp_x", Fxp_x)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fyp_x", Fyp_x)
+
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B1p_y", B1p_y)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/B2p_y", B2p_y)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Gp_y", Gp_y)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Sp_y", Sp_y)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fxp_y", Fxp_y)
+h5write("/home/thanasis/repos/Jecco.jl/debug/AH_debug_it_$(it).h5","AH/Fyp_y", Fyp_y)
+
+#########################################################################    
+
+        end
+        
         if max_res < ahf.epsilon
             break
         end
@@ -332,12 +595,17 @@ function find_AH!(sigma::Array, bulkconstrain::BulkConstrained,
         A_fact = factorize(A_mat)
         ldiv!(f0, A_fact, b_vec)
 
-        # update solution
+# update solution
+#check
         @inbounds for idx in eachindex(sigma)
+           # @show idx
+           # @show sigma[idx]
+           # @show f0[idx]
             sigma[idx] -= f0[idx]
+           # @show sigma[idx]
         end
         it += 1
-
+        
         # check if sigma inside domain
         min_uAH = minimum(sigma)
         max_uAH = maximum(sigma)
