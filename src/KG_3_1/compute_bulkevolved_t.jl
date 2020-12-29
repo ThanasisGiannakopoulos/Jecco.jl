@@ -4,6 +4,7 @@ function compute_bulkevolved_t_1st!(bulkevol_t::BulkEvolved,
                                     bulkconstrain::BulkConstrained,
                                     bulkevol::BulkEvolved, deriv::BulkDeriv,
                                     sys::System, evoleq::AffineNull)
+
     phiGF   = getphi(bulkevol)
     phiGF_t = getphi(bulkevol_t)
 
@@ -99,7 +100,6 @@ function compute_bulkevolved_t!(bulkevol_t::BulkEvolved,
 
     nothing
 end
-
 
 function sync_bulkevolved!(bulkevols_t, bulkconstrains,
                            systems::SystemPartition, evoleq)
