@@ -1,8 +1,10 @@
 
-function compute_bulkevolved_t!(bulkevol_t::BulkEvolved,
-                                bulkconstrain::BulkConstrained,
-                                bulkevol::BulkEvolved, deriv::BulkDeriv,
-                                sys::System, evoleq::AffineNull)
+# only for the first u-domain, since we need to separate the u=0 point
+function compute_bulkevolved_t_1st!(bulkevol_t::BulkEvolved,
+                                    bulkconstrain::BulkConstrained,
+                                    bulkevol::BulkEvolved, deriv::BulkDeriv,
+                                    sys::System, evoleq::AffineNull)
+
     phiGF   = getphi(bulkevol)
     phiGF_t = getphi(bulkevol_t)
 
@@ -54,6 +56,50 @@ function compute_bulkevolved_t!(bulkevol_t::BulkEvolved,
     nothing
 end
 
+# remaining u-domains
+function compute_bulkevolved_t!(bulkevol_t::BulkEvolved,
+                                bulkconstrain::BulkConstrained,
+                                bulkevol::BulkEvolved, deriv::BulkDeriv,
+                                sys::System, evoleq::AffineNull)
+    phiGF   = getphi(bulkevol)
+    phiGF_t = getphi(bulkevol_t)
+
+    phidGF = getphid(bulkconstrain)
+    # SdGF   = getSd(bulkconstrain)
+    AGF    = getA(bulkconstrain)
+
+    Du_phi  = deriv.Du_phi
+    Du_phid = deriv.Du_phid
+
+    uu  = sys.ucoord
+    # Du  = sys.Du
+    # Dx  = sys.Dx
+    # Dy  = sys.Dy
+
+    Nu, Nx, Ny = size(sys)
+
+    @fastmath @inbounds for j in 1:Ny
+        @inbounds for i in 1:Nx
+            @inbounds @simd for a in 1:Nu
+                u      = uu[a]
+                u3     = u * u * u
+                u4     = u * u3
+
+                phi    = phiGF[a,i,j]
+                phid   = phidGF[a,i,j]
+                A      = AGF[a,i,j]
+
+                phi_u  = Du_phi[a,i,j]
+                # phid_u = Du_phid[a,i,j]
+
+                phiGF_t[a,i,j] =  3//2 * (phi - phid) / u + phi_u / 2 + 3//2 * u3 * A * phi +
+                    A * u4 * phi_u / 2
+            end
+        end
+    end
+
+    nothing
+end
 
 function sync_bulkevolved!(bulkevols_t, bulkconstrains,
                            systems::SystemPartition, evoleq)
