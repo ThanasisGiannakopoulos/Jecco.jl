@@ -22,7 +22,12 @@ function setup_rhs(bulkconstrains::BulkPartition{Nsys}, boundary::Boundary,
         compute_bulkevolved_t_1st!(bulkevol_t, bulkconstrain, bulkevol, deriv,
                                    sys, evoleq)
         # remaining u-domains
-        @inbounds @threads for aa in 2:Nsys
+        # If we put a @threads after the @inbound below
+        # it seems that there is race condition issue
+        # i.e. @threads gives manifestly wrong results
+        # (at least for multidomains)
+        # TODO: fix the parallelization below
+        @inbounds for aa in 2:Nsys
 
             sys           = systems[aa]
             bulkevol_t    = bulkevols_t[aa]
