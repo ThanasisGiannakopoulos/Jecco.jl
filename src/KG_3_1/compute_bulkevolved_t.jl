@@ -29,7 +29,6 @@ function compute_bulkevolved_t_1st!(bulkevol_t::BulkEvolved,
             phid_u = Du_phid[1,i,j]
 
             phiGF_t[1,i,j] = 3//2 * (phi_u - phid_u) + phi_u / 2
-
         end
     end
 
@@ -48,8 +47,8 @@ function compute_bulkevolved_t_1st!(bulkevol_t::BulkEvolved,
                 phi_u  = Du_phi[a,i,j]
                 # phid_u = Du_phid[a,i,j]
 
-                phiGF_t[a,i,j] = phi_u / 2  + A * u4 * phi_u / 2
-                + 3//2 * (phi - phid) / u + 3//2 * u3 * A * phi
+                phiGF_t[a,i,j] =  3//2 * (phi - phid) / u + phi_u / 2 + 3//2 * u3 * A * phi +
+                    A * u4 * phi_u / 2
             end
         end
     end
@@ -93,8 +92,8 @@ function compute_bulkevolved_t!(bulkevol_t::BulkEvolved,
                 phi_u  = Du_phi[a,i,j]
                 # phid_u = Du_phid[a,i,j]
 
-                phiGF_t[a,i,j] = phi_u / 2 + A * u4 * phi_u / 2
-                + 3//2 * (phi - phid) / u + 3//2 * u3 * A * phi
+                phiGF_t[a,i,j] =  3//2 * (phi - phid) / u + phi_u / 2 + 3//2 * u3 * A * phi +
+                    A * u4 * phi_u / 2
             end
         end
     end
@@ -130,7 +129,7 @@ function sync_bulkevolved!(bulkevol1_t::BulkEvolved, bulkevol2_t::BulkEvolved,
             A = AGF[1,i,j]
 
             # characteristic speed
-            c = u0 * u0 * u0 * u0 * A/2 + 1/2
+            c = u0 * u0 * A/2
 
             # if c > 0, mode is entering grid1 from grid2;
             # if c < 0, mode is entering grid2 from grid1.
