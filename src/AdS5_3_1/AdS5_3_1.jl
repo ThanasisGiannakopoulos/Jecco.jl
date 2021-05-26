@@ -17,8 +17,9 @@ include("potential.jl")
 
 include("initial_data.jl")
 
-# Kreiss-Oliger dissipation
-include("KO_diss.jl")
+# Kreiss-Oliger dissipation and filtering
+include("dissipation.jl")
+>>>>>>> f930eb34b4688fa859f80dbda991b9aa648a1327
 
 # time marching orders
 include("setup_rhs.jl")
@@ -51,6 +52,7 @@ include("VEVs.jl")
 
 # random utilities useful for post-processing
 include("utils.jl")
+include("design_new_data.jl")
 include("recipes.jl")
 
 
