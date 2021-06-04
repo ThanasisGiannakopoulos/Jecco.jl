@@ -17,23 +17,24 @@ grid = SpecCartGrid3D(
     sigma_diss       =  0.2,
 )
 
-potential = AdS5_3_1.PhiPoli(
-    alpha   = -0.2,
-    beta    = 0.008,
-    gamma   = 0.0,
-    #oophiM2 = -1.38408,
-    #oophiQ  = 0.1,
+potential = AdS5_3_1.PhiAlphaBetaPotential(
+    alpha   = -0.01,
+    beta    = 8,
+    #gamma   = 0.1,
+    oophiM2 = -1.68662506324844,
+    oophiQ  = 0.2,
 )
 
 id = BlackBranePert(
-    energy_dens = -0.26,
+    energy_dens = 0.5,
     phi0        = 1.0,
-    phi2        = 0.698331,
-    phi5        = 2.2,
+    phi2        = 1.1,
+    oophiM2     = potential.oophiM2,
+    #phi5        = 1.1,
     #a4_ampx     = -0.05,
     #a4_kx       = 1,
-    xi0         = -0.0155308,
-    AH_pos      = 0.9,
+    xi0         = 0.2,
+    AH_pos      = 1.0,
     xmax        = grid.x_max,
     xmin        = grid.x_min,
     ymin        = grid.y_min,
@@ -50,7 +51,7 @@ diag = DiagAH(
     find_AH_every_t    = 1.0,
 )
 
-outdir = "/home/mikel/Documents/Jecco.jl/data/new_potential/a_-0.2_b_0.008"
+outdir = "/home/mikel/Documents/Jecco.jl/data/new_potential/superpotential8/phiM_0.77_phiQ_5_a_-0.01"
 
 io = InOut(
     out_boundary_every_t        = 0.5,
@@ -66,6 +67,7 @@ io = InOut(
 )
 
 integration = Integration(
+    #dt              = 0.0002,
     tmax            = 60.,
     ODE_method      = AdS5_3_1.VCABM3(),
     #ODE_method      = AdS5_3_1.AB3(),
