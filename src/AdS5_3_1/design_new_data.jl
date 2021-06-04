@@ -1,6 +1,7 @@
 using FFTW
 using HDF5
 import Base.Threads.@spawn
+import Base.Threads.@threads
 #using Interpolations
 #Functions that manipulate the output to generate an new initial state from which to run Jecco.
 #It creates a checkpoint file from where to run jecco and also normal files to plot it in mathematica and see
@@ -38,15 +39,22 @@ end
 abstract type XYInterpolator end
  #Interpolator of real functions.
 struct xy_interpolator{T<:Real, TP<:Integer} <: XYInterpolator
-    xmin :: T
-    xmax :: T
-    ymin :: T
-    ymax :: T
-    Nx   :: TP
-    Ny   :: TP
+    xmin      :: T
+    xmax      :: T
+    ymin      :: T
+    ymax      :: T
+    Nx        :: TP
+    Ny        :: TP
+    tolerance :: T
 end
 
-function xy_interpolator(x::Array{T,1}, y::Array{T,1}) where T<:Real
+struct Linear_Interpolator{T<:Chart, TP<:Jecco.PeriodicFD} <:XYInterpolator
+    chart2D   :: T
+    Dx        :: TP
+    Dy        :: TP
+end
+
+function xy_interpolator(x::Array{T,1}, y::Array{T,1}; tolerance::T = 0.0) where T<:Real
     xmin = x[1]
     xmax = x[end]+x[2]-x[1]
     ymin = y[1]
@@ -54,7 +62,54 @@ function xy_interpolator(x::Array{T,1}, y::Array{T,1}) where T<:Real
     Nx   = length(x)
     Ny   = length(y)
 
-    xy_interpolator{typeof(xmin),typeof(Nx)}(xmin,xmax,ymin,ymax,Nx,Ny)
+    xy_interpolator{typeof(xmin),typeof(Nx)}(xmin,xmax,ymin,ymax,Nx,Ny,tolerance)
+end
+
+function Linear_Interpolator(chart2D::Chart; order=4) where {T<:Real}
+    xcoord    = chart2D.coords[2]
+    ycoord    = chart2D.coords[3]
+    _, Nx, Ny = size(chart2D)
+    dx        = Jecco.delta(xcoord)
+    dy        = Jecco.delta(ycoord)
+
+    Dx        = CenteredDiff(1,order,dx,Nx)
+    Dy        = CenteredDiff(1,order,dy,Ny)
+
+    Linear_Interpolator{typeof(chart2D), typeof(Dx)}(chart2D, Dx, Dy)
+end
+
+function (interpolator::Linear_Interpolator)(f::Array{T,2}) where {T<:Real}
+    xcoord    = interpolator.chart2D.coords[2]
+    ycoord    = interpolator.chart2D.coords[3]
+    _, Nx, Ny = size(interpolator.chart2D)
+    Dx        = interpolator.Dx
+    Dy        = interpolator.Dy
+    xx        = xcoord[:]
+    yy        = ycoord[:]
+
+    function (x::TP, y::TP) where {TP<:Real}
+        i0 = findlast(xx .<= x)
+        j0 = findlast(yy .<= y)
+        if i0 < Nx i1 = i0 + 1 else i1 = i0 end
+        if j0 < Ny j1 = j0 + 1 else j1 = j0 end
+        if abs(xx[i0]-x) <= abs(xx[i1]-x)
+            x_old = xx[i0]
+            ii    = i0
+        else
+            x_old = xx[i1]
+            ii  = i1
+        end
+        if abs(yy[j0]-y) <= abs(yy[j1]-y)
+            y_old = yy[j0]
+            jj  = j0
+        else
+            y_old = yy[j1]
+            jj  = j1
+        end
+
+        f[ii,jj] + Dx(f[:,jj],ii)*(x-x_old) + Dy(f[ii,:],jj)*(y-y_old)
+    end
+
 end
 
 #Careful, FFTW decomposes taking as origin the (xmin,ymin), not the middle of the box as I am used to think.
@@ -68,47 +123,23 @@ function (interpolator::xy_interpolator)(f::Array{T,3}) where {T<:Real}
     k_x  = 2π*fftfreq(interpolator.Nx,1/dx)
     k_y  = 2π*fftfreq(interpolator.Ny,1/dy)
     fk   = im*zeros(Nu,length(k_x),length(k_y))
-    for i in 1:Nu
-        fk[i,:,:] = 1/(interpolator.Nx*interpolator.Ny)*(plan*f[i,:,:])
+    index = Array{Array{CartesianIndex{2},1},1}(undef, Nu)
+    tol = interpolator.tolerance
+    @fastmath @inbounds @threads for i in 1:Nu
+        fk[i,:,:]  = 1/(interpolator.Nx*interpolator.Ny)*(plan*f[i,:,:])
+        index[i]   = findall(abs.(fk[i,:,:]) .> tol)
     end
     function (x::TP, y::TP) where {TP<:Real}
         #@assert interpolator.xmin<=x<=interpolator.xmax
         #@assert interpolator.ymin<=y<=interpolator.ymax
-        sum = im*zeros(Nu)
-        @fastmath @inbounds Threads.@threads for i in 1:Nu
-            for k in 1:length(k_y)
-                for j in 1:length(k_x)
-                    sum[i] += fk[i,j,k]*exp(im*(k_x[j]*(x-xmin)+k_y[k]*(y-ymin)))
-                end
+        sum     = im*zeros(Nu)
+        @fastmath @inbounds @threads for i in 1:Nu
+            for I in index[i]
+                sum[i] += fk[i,I]*exp(im*(k_x[I[1]]*(x-xmin)+k_y[I[2]]*(y-ymin)))
             end
         end
         real(sum)
     end
-    #=
-    function (l::Int, x::TP, y::TP) where {TP<:Real}
-        #@assert interpolator.xmin<=x<=interpolator.xmax
-        #@assert interpolator.ymin<=y<=interpolator.ymax
-        sum = im*0.0
-        @fastmath @inbounds Threads.@threads for k in 1:length(k_y)
-            for j in 1:length(k_x)
-                sum = fk[l,j,k]*exp(im*(k_x[j]*(x-xmin)+k_y[k]*(y-ymin)))
-            end
-        end
-        real(sum)
-    end
-    function (x::Array{TP,2}, y::Array{TP,2}) where {TP<:Real}
-        Nx, Ny = size(x)
-        sum = im*zeros(Nu, Nx, Ny)
-        @fastmath @inbounds Threads.@threads for i in 1:Nu
-            for k in 1:length(k_y)
-                for j in 1:length(k_x)
-                    sum[i,:,:] += fk[i,j,k]*exp.(im*(k_x[j]*(x.-xmin)+k_y[k]*(y.-ymin)))
-                end
-            end
-        end
-        real(sum)
-    end
-=#
 end
 
 function change_B!(B_old::T, u::T, dxi::T, gidx::Int, grid::Int) where T<:Real
@@ -189,8 +220,8 @@ function construct_bulkevols(ts::OpenPMDTimeSeries, it::Int)
     return AdS5_3_1.BulkPartition((bulk...)), charts
 end
 
-function create_outputs(out_dir, evolvars, chart2D, charts, io, potential, phi0)
-    tinfo      = Jecco.TimeInfo(0, 0.0, 0.0, 0.0)
+function create_outputs(out_dir, evolvars, chart2D, charts, io, potential, phi0; it=0, t=0.0)
+    tinfo      = Jecco.TimeInfo(it, t, 0.0, 0.0)
     try run(`rm -r $out_dir`) catch end
     run(`mkdir $out_dir`)
     checkpoint = AdS5_3_1.checkpoint_writer(evolvars, chart2D, charts, tinfo, io)
@@ -202,7 +233,7 @@ function create_outputs(out_dir, evolvars, chart2D, charts, io, potential, phi0)
 end
 
 #Creates a checkpoint file with the data of the last iteration in a given folder.
-function create_checkpoint(io, potential)
+function create_checkpoint(io::InOut, potential::Potential)
     ts          = OpenPMDTimeSeries(io.recover_dir, prefix="boundary_")
     it_boundary = ts.iterations[end]
     boundary, _ = construct_boundary(ts, it_boundary)
@@ -323,7 +354,272 @@ function change_gauge!(sigma::Array{T,3}, grid::SpecCartGrid3D, boundary::Bounda
     #return sigma, bulkevols, bulkconstrains, gauge
 end
 
-function new_box(grid::SpecCartGrid3D, boundary::Boundary , bulkevols::BulkPartition ,gauge::Gauge,
+function same_grid_spacing!(f_new::Array{T,3}, f::Array{T,3}, x_indices::Tuple{Int,Int},
+                                            y_indices::Tuple{Int,Int}) where {T<:Real}
+
+    ifirst, ilast     = x_indices
+    jfirst, jlast     = y_indices
+    _, Nx, Ny         = size(f)
+    _, Nx_new, Ny_new = size(f_new)
+
+    if ilast-ifirst+1 != Nx || jlast-jfirst+1 != Ny
+        @warn "Something is wrong with the x and y indices"
+        return
+    end
+
+    f_new[:,1:ifirst,1:jfirst]        .= f[:,1,1]
+    @fastmath @inbounds @threads for i in 1:ifirst
+        f_new[:,i,jfirst:jlast]       .= @view f[:,1,:]
+    end
+    f_new[:,1:ifirst,jlast:end]       .= f[:,1,end]
+
+    @fastmath @inbounds @threads for i in ifirst:ilast
+        n = i-ifirst+1
+        f_new[:,i,1:jfirst]           .= f[:,n,1]
+        f_new[:,i,jlast:end]          .= f[:,n,end]
+    end
+    f_new[:,ifirst:ilast,jfirst:jlast] = @view f[:,:,:]
+
+    f_new[:,ilast:end,1:jfirst]       .= f[:,end,1]
+    @fastmath @inbounds @threads for i in ilast:Nx_new
+        f_new[:,i,jfirst:jlast]       .= @view f[:,end,:]
+    end
+    f_new[:,ilast:end,jlast:end]      .= f[:,end,end]
+
+    nothing
+end
+
+function same_grid_spacing(grid::SpecCartGrid3D, boundary::Boundary , bulkevols::BulkPartition ,gauge::Gauge, chart2D::Chart)
+    systems = SystemPartition(grid)
+    Nsys    = length(systems)
+    x_new   = systems[1].xcoord[:]
+    y_new   = systems[1].ycoord[:]
+    Nx_new  = length(x_new)
+    Ny_new  = length(y_new)
+    _, x, y = chart2D[:]
+
+    if x_new[1] == x[1] && x_new[end] == x[end] && Nx_new == length(x)
+        if y_new[1] == y[1] && y_new[end] == y[end] && Ny_new == length(y)
+            return boundary, bulkevols, gauge
+        end
+    end
+    boundary_new  = Boundary(grid)
+    gauge_new     = Gauge(grid)
+    bulkevols_new = BulkEvolvedPartition(grid)
+
+    ifirst = findfirst(x_new .>= x[1])
+    jfirst = findfirst(y_new .>= y[1])
+    ilast  = findfirst(x_new .>= x[end])
+    jlast  = findfirst(y_new .>= y[end])
+
+    x_indices = (ifirst, ilast)
+    y_indices = (jfirst, jlast)
+
+    a4      = boundary.a4
+    fx2     = boundary.fx2
+    fy2     = boundary.fy2
+    xi      = gauge.xi
+    a4_new  = boundary_new.a4
+    fx2_new = boundary_new.fx2
+    fy2_new = boundary_new.fy2
+    xi_new  = gauge_new.xi
+
+    @time same_grid_spacing!(a4_new, a4, x_indices, y_indices)
+    @time same_grid_spacing!(fx2_new, fx2, x_indices, y_indices)
+    @time same_grid_spacing!(fy2_new, fy2, x_indices, y_indices)
+    @time same_grid_spacing!(xi_new, xi, x_indices, y_indices)
+
+    for i in 1:Nsys
+        B1      = bulkevols[i].B1
+        B2      = bulkevols[i].B2
+        G       = bulkevols[i].G
+        phi     = bulkevols[i].phi
+        B1_new  = bulkevols_new[i].B1
+        B2_new  = bulkevols_new[i].B2
+        G_new   = bulkevols_new[i].G
+        phi_new = bulkevols_new[i].phi
+
+        @time same_grid_spacing!(B1_new, B1, x_indices, y_indices)
+        @time same_grid_spacing!(B2_new, B2, x_indices, y_indices)
+        @time same_grid_spacing!(G_new, G, x_indices, y_indices)
+        @time same_grid_spacing!(phi_new, phi, x_indices, y_indices)
+
+    end
+
+    boundary_new, bulkevols_new, gauge_new
+
+end
+
+function different_grid_spacing!(boundary_new::Boundary, boundary::Boundary, chart2D::Chart, x_new::Array{T,1}, y_new::Array{T,1},
+                                x_indices::Tuple{Int,Int}, y_indices::Tuple{Int,Int}) where {T<:Real}
+
+    ifirst, ilast = x_indices
+    jfirst, jlast = y_indices
+    interp        = Linear_Interpolator(chart2D)
+    a4            = boundary_new.a4
+    fx2           = boundary_new.fx2
+    fy2           = boundary_new.fy2
+    a4_inter      = interp(boundary.a4[1,:,:])
+    fx2_inter     = interp(boundary.fx2[1,:,:])
+    fy2_inter     = interp(boundary.fy2[1,:,:])
+
+    a4[1,1:ifirst,1:jfirst]  .= a4_inter(x_new[ifirst], y_new[jfirst])
+    fx2[1,1:ifirst,1:jfirst] .= fx2_inter(x_new[ifirst], y_new[jfirst])
+    fy2[1,1:ifirst,1:jfirst] .= fy2_inter(x_new[ifirst], y_new[jfirst])
+
+    a4[1,1:ifirst,jlast:end]  .= a4_inter(x_new[ifirst], y_new[jlast])
+    fx2[1,1:ifirst,jlast:end] .= fx2_inter(x_new[ifirst], y_new[jlast])
+    fy2[1,1:ifirst,jlast:end] .= fy2_inter(x_new[ifirst], y_new[jlast])
+
+    a4[1,ilast:end,1:jfirst]  .= a4_inter(x_new[ilast], y_new[jfirst])
+    fx2[1,ilast:end,1:jfirst] .= fx2_inter(x_new[ilast], y_new[jfirst])
+    fy2[1,ilast:end,1:jfirst] .= fy2_inter(x_new[ilast], y_new[jfirst])
+
+    a4[1,ilast:end,jlast:end]  .= a4_inter(x_new[ilast], y_new[jlast])
+    fx2[1,ilast:end,jlast:end] .= fx2_inter(x_new[ilast], y_new[jlast])
+    fy2[1,ilast:end,jlast:end] .= fy2_inter(x_new[ilast], y_new[jlast])
+
+    @fastmath @inbounds @threads for i in ifirst:ilast
+        a4[1,i,1:jfirst]  .= a4_inter(x_new[i], y_new[jfirst])
+        fx2[1,i,1:jfirst] .= fx2_inter(x_new[i], y_new[jfirst])
+        fy2[1,i,1:jfirst] .= fy2_inter(x_new[i], y_new[jfirst])
+
+        a4[1,i,jlast:end]  .= a4_inter(x_new[i], y_new[jlast])
+        fx2[1,i,jlast:end] .= fx2_inter(x_new[i], y_new[jlast])
+        fy2[1,i,jlast:end] .= fy2_inter(x_new[i], y_new[jlast])
+    end
+
+    @fastmath @inbounds @threads for j in jfirst:jlast
+        a4[1,1:ifirst,j]  .= a4_inter(x_new[ifirst], y_new[j])
+        fx2[1,1:ifirst,j] .= fx2_inter(x_new[ifirst], y_new[j])
+        fy2[1,1:ifirst,j] .= fy2_inter(x_new[ifirst], y_new[j])
+
+        a4[1,ilast:end,j]  .= a4_inter(x_new[ilast], y_new[j])
+        fx2[1,ilast:end,j] .= fx2_inter(x_new[ilast], y_new[j])
+        fy2[1,ilast:end,j] .= fy2_inter(x_new[ilast], y_new[j])
+
+        for i in ifirst:ilast
+            a4[1,i,j]  = a4_inter(x_new[i], y_new[j])
+            fx2[1,i,j] = fx2_inter(x_new[i], y_new[j])
+            fy2[1,i,j] = fy2_inter(x_new[i], y_new[j])
+        end
+    end
+end
+
+function different_grid_spacing!(gauge_new::Gauge, gauge::Gauge, chart2D::Chart, x_new::Array{T,1}, y_new::Array{T,1},
+                                x_indices::Tuple{Int,Int}, y_indices::Tuple{Int,Int}) where {T<:Real}
+
+
+    ifirst, ilast = x_indices
+    jfirst, jlast = y_indices
+    interp        = Linear_Interpolator(chart2D)
+    xi            = gauge_new.xi
+    xi_inter      = interp(gauge.xi[1,:,:])
+
+    xi[1,1:ifirst,1:jfirst]   .= xi_inter(x_new[ifirst], y_new[jfirst])
+    xi[1,1:ifirst,jlast:end]  .= xi_inter(x_new[ifirst], y_new[jlast])
+    xi[1,ilast:end,1:jfirst]  .= xi_inter(x_new[ilast], y_new[jfirst])
+    xi[1,ilast:end,jlast:end] .= xi_inter(x_new[ilast], y_new[jlast])
+
+    @fastmath @inbounds @threads for i in ifirst:ilast
+        xi[1,i,1:jfirst]  .= xi_inter(x_new[i], y_new[jfirst])
+        xi[1,i,jlast:end] .= xi_inter(x_new[i], y_new[jlast])
+    end
+
+    @fastmath @inbounds @threads for j in jfirst:jlast
+        xi[1,1:ifirst,j]  .= xi_inter(x_new[ifirst], y_new[j])
+        xi[1,ilast:end,j] .= xi_inter(x_new[ilast], y_new[j])
+
+        for i in ifirst:ilast
+            xi[1,i,j]  = xi_inter(x_new[i], y_new[j])
+        end
+    end
+end
+
+function different_grid_spacing!(bulkevols_new::BulkPartition, bulkevols::BulkPartition, chart2D::Chart,
+                                x_new::Array{T,1}, y_new::Array{T,1}, x_indices::Tuple{Int,Int},
+                                y_indices::Tuple{Int,Int}) where {T<:Real}
+
+    Nsys = length(bulkevols)
+    if length(bulkevols_new) != Nsys
+        @warn "Missmatching holographic grids"
+        return
+    end
+
+    ifirst, ilast = x_indices
+    jfirst, jlast = y_indices
+
+    interp = Linear_Interpolator(chart2D)
+
+    @fastmath @inbounds for k in 1:Nsys
+        B1_new   = bulkevols_new[k].B1
+        B2_new   = bulkevols_new[k].B2
+        G_new    = bulkevols_new[k].G
+        phi_new  = bulkevols_new[k].phi
+        Nu, _, _ = size(B1_new)
+
+        @fastmath @inbounds @threads for n in 1:Nu
+            B1_inter  = interp(bulkevols[k].B1[n,:,:])
+            B2_inter  = interp(bulkevols[k].B2[n,:,:])
+            G_inter   = interp(bulkevols[k].G[n,:,:])
+            phi_inter = interp(bulkevols[k].phi[n,:,:])
+
+            B1_new[n,1:ifirst,1:jfirst]  .= B1_inter(x_new[ifirst], y_new[jfirst])
+            B2_new[n,1:ifirst,1:jfirst]  .= B2_inter(x_new[ifirst], y_new[jfirst])
+            G_new[n,1:ifirst,1:jfirst]   .= G_inter(x_new[ifirst], y_new[jfirst])
+            phi_new[n,1:ifirst,1:jfirst] .= phi_inter(x_new[ifirst], y_new[jfirst])
+
+            B1_new[n,1:ifirst,jlast:end]  .= B1_inter(x_new[ifirst], y_new[jlast])
+            B2_new[n,1:ifirst,jlast:end]  .= B2_inter(x_new[ifirst], y_new[jlast])
+            G_new[n,1:ifirst,jlast:end]   .= G_inter(x_new[ifirst], y_new[jlast])
+            phi_new[n,1:ifirst,jlast:end] .= phi_inter(x_new[ifirst], y_new[jlast])
+
+            B1_new[n,ilast:end,1:jfirst]  .= B1_inter(x_new[ilast], y_new[jfirst])
+            B2_new[n,ilast:end,1:jfirst]  .= B2_inter(x_new[ilast], y_new[jfirst])
+            G_new[n,ilast:end,1:jfirst]   .= G_inter(x_new[ilast], y_new[jfirst])
+            phi_new[n,ilast:end,1:jfirst] .= phi_inter(x_new[ilast], y_new[jfirst])
+
+            B1_new[n,ilast:end,jlast:end]  .= B1_inter(x_new[ilast], y_new[jlast])
+            B2_new[n,ilast:end,jlast:end]  .= B2_inter(x_new[ilast], y_new[jlast])
+            G_new[n,ilast:end,jlast:end]   .= G_inter(x_new[ilast], y_new[jlast])
+            phi_new[n,ilast:end,jlast:end] .= phi_inter(x_new[ilast], y_new[jlast])
+
+            @fastmath @inbounds for i in ifirst:ilast
+                B1_new[n,i,1:jfirst]  .= B1_inter(x_new[i], y_new[jfirst])
+                B2_new[n,i,1:jfirst]  .= B2_inter(x_new[i], y_new[jfirst])
+                G_new[n,i,1:jfirst]   .= G_inter(x_new[i], y_new[jfirst])
+                phi_new[n,i,1:jfirst] .= phi_inter(x_new[i], y_new[jfirst])
+
+                B1_new[n,i,jlast:end]  .= B1_inter(x_new[i], y_new[jlast])
+                B2_new[n,i,jlast:end]  .= B2_inter(x_new[i], y_new[jlast])
+                G_new[n,i,jlast:end]   .= G_inter(x_new[i], y_new[jlast])
+                phi_new[n,i,jlast:end] .= phi_inter(x_new[i], y_new[jlast])
+            end
+
+            @fastmath @inbounds for j in jfirst:jlast
+                B1_new[n,1:ifirst,j]  .= B1_inter(x_new[ifirst], y_new[j])
+                B2_new[n,1:ifirst,j]  .= B2_inter(x_new[ifirst], y_new[j])
+                G_new[n,1:ifirst,j]   .= G_inter(x_new[ifirst], y_new[j])
+                phi_new[n,1:ifirst,j] .= phi_inter(x_new[ifirst], y_new[j])
+
+                for i in ifirst:ilast
+                    B1_new[n,i,j]  = B1_inter(x_new[i], y_new[j])
+                    B2_new[n,i,j]  = B2_inter(x_new[i], y_new[j])
+                    G_new[n,i,j]   = G_inter(x_new[i], y_new[j])
+                    phi_new[n,i,j] = phi_inter(x_new[i], y_new[j])
+                end
+
+                B1_new[n,ilast:end,j]  .= B1_inter(x_new[ilast], y_new[j])
+                B2_new[n,ilast:end,j]  .= B2_inter(x_new[ilast], y_new[j])
+                G_new[n,ilast:end,j]   .= G_inter(x_new[ilast], y_new[j])
+                phi_new[n,ilast:end,j] .= phi_inter(x_new[ilast], y_new[j])
+            end
+        end
+     end
+end
+
+#The interp routine is very slow, it is better to use a linear one.
+function different_grid_spacing(grid::SpecCartGrid3D, boundary::Boundary , bulkevols::BulkPartition ,gauge::Gauge,
                               chart2D::Chart)
 
     systems = SystemPartition(grid)
@@ -340,157 +636,53 @@ function new_box(grid::SpecCartGrid3D, boundary::Boundary , bulkevols::BulkParti
         end
     end
 
-    interp = xy_interpolator(x,y)
-    a4     = interp(boundary.a4)
-    fx2    = interp(boundary.fx2)
-    fy2    = interp(boundary.fy2)
-    xi     = interp(gauge.xi)
-
     boundary_new  = Boundary(grid)
     gauge_new     = Gauge(grid)
     bulkevols_new = BulkEvolvedPartition(grid)
-
-    a4_new  = boundary_new.a4
-    fx2_new = boundary_new.fx2
-    fy2_new = boundary_new.fy2
-    xi_new  = gauge_new.xi
 
     ifirst = findfirst(x_new .>= x[1])
     jfirst = findfirst(y_new .>= y[1])
     ilast  = findfirst(x_new .>= x[end])
     jlast  = findfirst(y_new .>= y[end])
 
-    for i in 1:Nsys
-        B1  = interp(bulkevols[i].B1)
-        B2  = interp(bulkevols[i].B2)
-        G   = interp(bulkevols[i].G)
-        phi = interp(bulkevols[i].phi)
+    x_indices = (ifirst, ilast)
+    y_indices = (jfirst, jlast)
 
-        B1_new  = bulkevols_new[i].B1
-        B2_new  = bulkevols_new[i].B2
-        G_new   = bulkevols_new[i].G
-        phi_new = bulkevols_new[i].phi
+    @time different_grid_spacing!(boundary_new, boundary, chart2D, x_new, y_new, x_indices, y_indices)
+    @time different_grid_spacing!(gauge_new, gauge, chart2D, x_new, y_new, x_indices, y_indices)
+    @time different_grid_spacing!(bulkevols_new, bulkevols, chart2D, x_new, y_new, x_indices, y_indices)
 
-        @time B1_new[:,1:ifirst-1,1:jfirst-1]  .= B1(x[1], y[1])
-        @time B2_new[:,1:ifirst-1,1:jfirst-1]  .= B2(x[1], y[1])
-        @time G_new[:,1:ifirst-1,1:jfirst-1]   .= G(x[1], y[1])
-        @time phi_new[:,1:ifirst-1,1:jfirst-1] .= phi(x[1], y[1])
-
-        @time B1_new[:,1:ifirst-1,jlast+1:end]  .= B1(x[1], y[1])
-        @time B2_new[:,1:ifirst-1,jlast+1:end]  .= B2(x[1], y[1])
-        @time G_new[:,1:ifirst-1,jlast+1:end]   .= G(x[1], y[1])
-        @time phi_new[:,1:ifirst-1,jlast+1:end] .= phi(x[1], y[1])
-
-        @time B1_new[:,ilast+1:end,1:jfirst-1]  .= B1(x[1], y[1])
-        @time B2_new[:,ilast+1:end,1:jfirst-1]  .= B2(x[1], y[1])
-        @time G_new[:,ilast+1:end,1:jfirst-1]   .= G(x[1], y[1])
-        @time phi_new[:,ilast+1:end,1:jfirst-1] .= phi(x[1], y[1])
-
-        @time B1_new[:,ilast+1:end,jlast+1:end]  .= B1(x[1], y[1])
-        @time B2_new[:,ilast+1:end,jlast+1:end]  .= B2(x[1], y[1])
-        @time G_new[:,ilast+1:end,jlast+1:end]   .= G(x[1], y[1])
-        @time phi_new[:,ilast+1:end,jlast+1:end] .= phi(x[1], y[1])
-
-        if i == 1
-            @time a4_new[:,1:ifirst-1,1:jfirst-1]  .= a4(x[1], y[1])
-            @time fx2_new[:,1:ifirst-1,1:jfirst-1] .= fx2(x[1], y[1])
-            @time fy2_new[:,1:ifirst-1,1:jfirst-1] .= fy2(x[1], y[1])
-            @time xi_new[:,1:ifirst-1,1:jfirst-1]  .= xi(x[1], y[1])
-
-            @time a4_new[:,1:ifirst-1,jlast+1:end]  .= a4(x[1], y[1])
-            @time fx2_new[:,1:ifirst-1,jlast+1:end] .= fx2(x[1], y[1])
-            @time fy2_new[:,1:ifirst-1,jlast+1:end] .= fy2(x[1], y[1])
-            @time xi_new[:,1:ifirst-1,jlast+1:end]  .= xi(x[1], y[1])
-
-            @time a4_new[:,ilast+1:end,1:jfirst-1]  .= a4(x[1], y[1])
-            @time fx2_new[:,ilast+1:end,1:jfirst-1] .= fx2(x[1], y[1])
-            @time fy2_new[:,ilast+1:end,1:jfirst-1] .= fy2(x[1], y[1])
-            @time xi_new[:,ilast+1:end,1:jfirst-1]  .= xi(x[1], y[1])
-
-            @time a4_new[:,ilast+1:end,jlast+1:end]  .= a4(x[1], y[1])
-            @time fx2_new[:,ilast+1:end,jlast+1:end] .= fx2(x[1], y[1])
-            @time fy2_new[:,ilast+1:end,jlast+1:end] .= fy2(x[1], y[1])
-            @time xi_new[:,ilast+1:end,jlast+1:end]  .= xi(x[1], y[1])
-        end
-
-        @time @fastmath @inbounds Threads.@threads for j in ifirst:ilast
-            B1_new[:,j,1:jfirst-1]  .= B1(x_new[j], y[1])
-            B2_new[:,j,1:jfirst-1]  .= B2(x_new[j], y[1])
-            G_new[:,j,1:jfirst-1]   .= G(x_new[j], y[1])
-            phi_new[:,j,1:jfirst-1] .= phi(x_new[j], y[1])
-
-            B1_new[:,j,jlast+1:end]  .= B1(x_new[j], y[1])
-            B2_new[:,j,jlast+1:end]  .= B2(x_new[j], y[1])
-            G_new[:,j,jlast+1:end]   .= G(x_new[j], y[1])
-            phi_new[:,j,jlast+1:end] .= phi(x_new[j], y[1])
-            if i == 1
-                a4_new[:,j,1:jfirst-1]  .= a4(x_new[j], y[1])
-                fx2_new[:,j,1:jfirst-1] .= fx2(x_new[j], y[1])
-                fy2_new[:,j,1:jfirst-1] .= fy2(x_new[j], y[1])
-                xi_new[:,j,1:jfirst-1]  .= xi(x_new[j], y[1])
-
-                a4_new[:,j,jlast+1:end]  .= a4(x_new[j], y[1])
-                fx2_new[:,j,jlast+1:end] .= fx2(x_new[j], y[1])
-                fy2_new[:,j,jlast+1:end] .= fy2(x_new[j], y[1])
-                xi_new[:,j,jlast+1:end]  .= xi(x_new[j], y[1])
-            end
-        end
-
-        @time @fastmath @inbounds Threads.@threads for k in jfirst:jlast
-            B1_new[:,1:ifirst-1,k]  .= B1(x[1], y_new[k])
-            B2_new[:,1:ifirst-1,k]  .= B2(x[1], y_new[k])
-            G_new[:,1:ifirst-1,k]   .= G(x[1], y_new[k])
-            phi_new[:,1:ifirst-1,k] .= phi(x[1], y_new[k])
-
-            B1_new[:,ilast+1:end,k]  .= B1(x[1], y_new[k])
-            B2_new[:,ilast+1:end,k]  .= B2(x[1], y_new[k])
-            G_new[:,ilast+1:end,k]   .= G(x[1], y_new[k])
-            phi_new[:,ilast+1:end,k] .= phi(x[1], y_new[k])
-            if i == 1
-                a4_new[:,1:ifirst-1,k]  .= a4(x[1], y_new[k])
-                fx2_new[:,1:ifirst-1,k] .= fx2(x[1], y_new[k])
-                fy2_new[:,1:ifirst-1,k] .= fy2(x[1], y_new[k])
-                xi_new[:,1:ifirst-1,k]  .= xi(x[1], y_new[k])
-
-                a4_new[:,ilast+1:end,k]  .= a4(x[1], y_new[k])
-                fx2_new[:,ilast+1:end,k] .= fx2(x[1], y_new[k])
-                fy2_new[:,ilast+1:end,k] .= fy2(x[1], y_new[k])
-                xi_new[:,ilast+1:end,k]  .= xi(x[1], y_new[k])
-            end
-        end
-
-        @time @fastmath @inbounds Threads.@threads for k in jfirst:jlast
-            for j in ifirst:ilast
-                B1_new[:,j,k]  = B1(x_new[j], y_new[k])
-                B2_new[:,j,k]  = B2(x_new[j], y_new[k])
-                G_new[:,j,k]   = G(x_new[j], y_new[k])
-                phi_new[:,j,k] = phi(x_new[j], y_new[k])
-                if i == 1
-                    a4_new[:,j,k]  = a4(x_new[j], y_new[k])
-                    fx2_new[:,j,k] = fx2(x_new[j], y_new[k])
-                    fy2_new[:,j,k] = fy2(x_new[j], y_new[k])
-                    xi_new[:,j,k]  = xi(x_new[j], y_new[k])
-                end
-            end
-        end
-     end
-    return boundary_new, bulkevols_new, gauge_new
+    boundary_new, bulkevols_new, gauge_new
 end
 
-function new_box(grid::SpecCartGrid3D, io::InOut, potential::Potential)
+function new_box(grid::SpecCartGrid3D, io::InOut, potential::Potential;
+                            same_spacing::Symbol = :no)
     read_dir     = io.recover_dir
 
     ts                = OpenPMDTimeSeries(read_dir, prefix="boundary_")
-    boundary, chart2D = construct_boundary(ts, ts.iterations[end])
+    it_boundary       = ts.iterations[end]
+    boundary, chart2D = construct_boundary(ts, it_boundary)
+    t_boundary        = ts.current_t
 
     ts       = OpenPMDTimeSeries(read_dir, prefix="gauge_")
-    gauge, _ = construct_gauge(ts, ts.iterations[end])
+    it_gauge = ts.iterations[end]
+    gauge, _ = construct_gauge(ts, it_gauge)
+    t_gauge  = ts.current_t
 
     ts                = OpenPMDTimeSeries(read_dir, prefix="bulk_")
-    bulkevols, charts = construct_bulkevols(ts, ts.iterations[end])
+    it_bulk           = ts.iterations[end]
+    bulkevols, charts = construct_bulkevols(ts, it_bulk)
+    t_bulk            = ts.current_t
 
+    it       = max(it_bulk, it_gauge, it_bulk)
+    t        = max(t_bulk, t_gauge, t_bulk)
+    tinfo    = Jecco.TimeInfo(it, t, 0.0, 0.0)
 
-    boundary, bulkevols, gauge = new_box(grid, boundary, bulkevols, gauge, chart2D)
+    if same_spacing == :yes
+        boundary, bulkevols, gauge = same_grid_spacing(grid, boundary, bulkevols, gauge, chart2D)
+    else
+        boundary, bulkevols, gauge = different_grid_spacing(grid, boundary, bulkevols, gauge, chart2D)
+    end
 
     phi0 = try
         ts.params["phi0"]
@@ -510,15 +702,155 @@ function new_box(grid::SpecCartGrid3D, io::InOut, potential::Potential)
             throw(e)
         end
     end
+
+
     atlas   = Atlas(grid)
     systems = SystemPartition(grid)
-    tinfo   = Jecco.TimeInfo(0, 0.0, 0.0, 0.0)
     empty   = Cartesian{1}("u", 0.0, 0.0, 1)
     chart2D = Chart(empty, systems[1].xcoord, systems[1].ycoord)
 
     evolvars = AdS5_3_1.EvolVars(boundary, gauge, bulkevols)
-    create_outputs(io.out_dir, evolvars, chart2D, Tuple(charts), io, potential, phi0)
+    create_outputs(io.out_dir, evolvars, chart2D, Tuple(charts), io, potential, phi0
+                                ,t=t, it=it)
 
+end
+
+function join_boxes(boundary_1::Boundary, boundary_2::Boundary)
+    _, Nx_1, Ny = size(boundary_1.a4)
+    _, Nx_2, _  = size(boundary_2.a4)
+    Nx       = Nx_1 + Nx_2
+
+    a4  = zeros(1, Nx, Ny)
+    fy2 = zeros(1, Nx, Ny)
+    fx2 = zeros(1, Nx, Ny)
+
+    a4[1,1:Nx_1,:]      = boundary_1.a4
+    a4[1,Nx_1+1:end,:]  = boundary_2.a4
+    fx2[1,1:Nx_1,:]     = boundary_1.fx2
+    fx2[1,Nx_1+1:end,:] = boundary_2.fx2
+    fy2[1,1:Nx_1,:]     = boundary_1.fy2
+    fy2[1,Nx_1+1:end,:] = boundary_2.fy2
+
+    Boundary(a4, fx2, fy2)
+end
+
+function join_boxes(gauge_1::Gauge, gauge_2::Gauge)
+    _, Nx_1, Ny = size(gauge_1.xi)
+    _, Nx_2, _  = size(gauge_2.xi)
+    Nx       = Nx_1 + Nx_2
+
+    xi = zeros(1, Nx, Ny)
+
+    xi[1,1:Nx_1,:]     = gauge_1.xi
+    xi[1,Nx_1+1:end,:] = gauge_2.xi
+
+    Gauge(xi)
+end
+
+function join_boxes(bulkevols_1::BulkPartition, bulkevols_2::BulkPartition)
+
+    if length(bulkevols_1) != length(bulkevols_2)
+        @warn "Both bulk grids must be identical"
+        return
+    end
+
+    Nsys          = length(bulkevols_1)
+    _, Nx_1, Ny   = size(bulkevols_1[1].B1)
+    _, Nx_2, _    = size(bulkevols_2[1].B1)
+    Nx            = Nx_1 + Nx_2
+    bulk          = Array{BulkEvolved,1}(undef, Nsys)
+
+    for n in 1:Nsys
+        Nu, _, _  = size(bulkevols_1[n].B1)
+        B1        = zeros(Nu, Nx, Ny)
+        B2        = zeros(Nu, Nx, Ny)
+        G         = zeros(Nu, Nx, Ny)
+        phi       = zeros(Nu, Nx, Ny)
+
+        B1[:,1:Nx_1,:]      = bulkevols_1[n].B1
+        B1[:,Nx_1+1:end,:]  = bulkevols_2[n].B1
+        B2[:,1:Nx_1,:]      = bulkevols_1[n].B2
+        B2[:,Nx_1+1:end,:]  = bulkevols_2[n].B2
+        G[:,1:Nx_1,:]       = bulkevols_1[n].G
+        G[:,Nx_1+1:end,:]   = bulkevols_2[n].G
+        phi[:,1:Nx_1,:]     = bulkevols_1[n].phi
+        phi[:,Nx_1+1:end,:] = bulkevols_2[n].phi
+
+        bulk[n] = BulkEvolved(B1, B2, G, phi)
+    end
+
+    AdS5_3_1.BulkPartition((bulk...))
+end
+
+function join_boxes(chart2D_1::Chart, chart2D_2::Chart)
+    xmin_1   = chart2D_1.coords[2].min
+    xmax_1   = chart2D_1.coords[2].max
+    dx_1     = Jecco.delta(chart2D_1.coords[2])
+    xmin_2   = chart2D_2.coords[2].min
+    xmax_2   = chart2D_2.coords[2].max
+    Nx_1     = chart2D_1.coords[2].nodes
+    Nx_2     = chart2D_2.coords[2].nodes
+    xmax     = xmax_2-xmin_2
+    xmin     = xmin_1-(xmax_1+dx_1)
+    Nx       = Nx_1+Nx_2
+    xcoord   = Cartesian{2}("x", xmin, xmax, Nx)
+    ycoord   = chart2D_1.coords[3]
+    empty    = Cartesian{1}("u", 0.0, 0.0, 1)
+
+    Chart(empty, xcoord, ycoord)
+end
+
+function join_boxes(charts_1::Array{Chart,1}, chart2D::Chart)
+    Nsys   = length(charts_1)
+    charts = Array{Chart,1}(undef, Nsys)
+    for n in 1:Nsys
+        ucoord   = charts_1[n].coords[1]
+        xcoord   = chart2D.coords[2]
+        ycoord   = chart2D.coords[3]
+        charts[n] = Chart(ucoord, xcoord, ycoord)
+    end
+
+    Tuple(charts)
+end
+
+function join_boxes(io::InOut, potential::Potential, dir1::String, dir2::String)
+    ts                    = OpenPMDTimeSeries(dir1, prefix="boundary_")
+    boundary_1, chart2D_1 = construct_boundary(ts, ts.iterations[end])
+    ts                    = OpenPMDTimeSeries(dir2, prefix="boundary_")
+    boundary_2, chart2D_2 = construct_boundary(ts, ts.iterations[end])
+
+    ts         = OpenPMDTimeSeries(dir1, prefix="gauge_")
+    gauge_1, _ = construct_gauge(ts, ts.iterations[end])
+    ts         = OpenPMDTimeSeries(dir2, prefix="gauge_")
+    gauge_2, _ = construct_gauge(ts, ts.iterations[end])
+
+    ts                    = OpenPMDTimeSeries(dir1, prefix="bulk_")
+    bulkevols_1, charts_1 = construct_bulkevols(ts, ts.iterations[end])
+    ts                    = OpenPMDTimeSeries(dir2, prefix="bulk_")
+    bulkevols_2, charts_2 = construct_bulkevols(ts, ts.iterations[end])
+#=
+    if charts_1[1].coords[1] != charts_2[1].coords[1] || charts_1[2].coords[1] != chart_2[2].coords[1]
+        @warn "Bulk grids must coincide for both data sets"
+        return
+    end
+=#
+    phi0 = try
+        ts.params["phi0"]
+    catch e
+        if isa(e, KeyError)
+            0.0   # if "phi0" is not found in the params Dict, set phi0 = 0
+        else
+            throw(e)
+        end
+    end
+    chart2D   = join_boxes(chart2D_1, chart2D_2)
+    charts    = join_boxes(charts_1, chart2D)
+    boundary  = join_boxes(boundary_1, boundary_2)
+    gauge     = join_boxes(gauge_1, gauge_2)
+    bulkevols = join_boxes(bulkevols_1, bulkevols_2)
+    evolvars  = AdS5_3_1.EvolVars(boundary, gauge, bulkevols)
+
+    create_outputs(io.out_dir, evolvars, chart2D, charts, io, potential, phi0)
 end
 
 function shift!(boundary::Boundary, bulkevols::BulkPartition, gauge::Gauge, chart2D::Chart, new_center::Tuple{T,T}) where {T<:Real}
@@ -716,7 +1048,7 @@ function bubble_expansion(grid::SpecCartGrid3D, io::InOut, potential::Potential,
         G      = BulkTimeSeries(PS_dir, :G, n)[end,:,:,:]
         phi    = similar(phi_PS[end,:,:,:])
         k      = (phi_A-phi_B)./(phi_PS[end,:,hot]-phi_PS[end,:,cold])
-        Nu = length(phi[:,1,1])
+        Nu     = length(phi[:,1,1])
         for i in 1:Nu
             phi[i,:,:] = k[i].*(phi_PS[end,i,:,:].-phi_PS[end,i,cold]).+phi_B[i]
         end
@@ -739,16 +1071,13 @@ function bubble_expansion(grid::SpecCartGrid3D, io::InOut, potential::Potential,
     empty = Cartesian{1}("u", 0.0, 0.0, 1)
     chart2D = Chart(empty, systems[1].xcoord, systems[1].ycoord)
     evolvars = AdS5_3_1.EvolVars(boundary_new, gauge_new, bulkevols_new)
-    create_outputs(io.out_dir, evolvars, chart2D, atlas.charts, io, potential, phi0)
+    create_outputs(io.out_dir, evolvars, chart2D, atlas.x, io, potential, phi0)
 end
 
-#For the moment we change a4 and fx2, fy2 by multiplying the energy by some factor. We can change this so that we decide what
-#profile is used for these functions. We mantain the cold phase to its original value. Enbed in a bigger box by extending the edge value
-function create_new_data(grid::SpecCartGrid3D, io::InOut, new_parameters::NewParameters, potential::Potential)
-    dirname   = io.recover_dir
-    atlas     = Atlas(grid)
-    systems   = SystemPartition(grid)
-    Nsys      = length(systems)
+function initial_numerical_phi(grid::SpecCartGrid3D, io::InOut, potential::Potential)
+    atlas   = Atlas(grid)
+    systems = SystemPartition(grid)
+    Nsys    = length(systems)
 
     boundary       = Boundary(grid)
     gauge          = Gauge(grid)
@@ -756,220 +1085,44 @@ function create_new_data(grid::SpecCartGrid3D, io::InOut, new_parameters::NewPar
     tinfo          = Jecco.TimeInfo(0, 0.0, 0.0, 0.0)
     empty          = Cartesian{1}("u", 0.0, 0.0, 1)
     chart2D        = Chart(empty, systems[1].xcoord, systems[1].ycoord)
-    _,x_new,y_new  = chart2D[:]
-    Nx_new         = length(x_new)
-    Ny_new         = length(y_new)
+    _, Nx, Ny      = size(chart2D)
 
-    a4    = BoundaryTimeSeries(dirname,:a4)
-    fx2   = BoundaryTimeSeries(dirname,:fx2)
-    fy2   = BoundaryTimeSeries(dirname,:fy2)
-    phi2  = BoundaryTimeSeries(dirname,:phi2)
-    xi    = XiTimeSeries(dirname)
-    _,x,y = get_coords(a4,1,:,:)
-    xmin  = x[1]
-    xmax  = x[end]
-    ymin  = y[1]
-    ymax  = y[end]
-    Nx    = length(x)
-    Ny    = length(y)
-    #Old runs do not have ts.params field, I set it by hand to what we usually use.
-    phi0 = try
-        a4.ts.params["phi0"]
-    catch e
-        if isa(e, KeyError)
-            0.0   # if "phi0" is not found in the params Dict, set phi0 = 0
-        else
-            throw(e)
-        end
-    end
-    oophiM2 = try
-        a4.ts.params["oophiM2"]
-    catch e
-        if isa(e, KeyError)
-            0.0   # if "oophiM2" is not found in the params Dict, set oophiM2 = 0
-        else
-            throw(e)
-        end
-    end
-    #potential = Phi8Potential(oophiM2=-1.0, oophiQ=0.1,)
-    #try
-    #    phi0  = a4.ts.params["phi0"]
-    #    potential = Phi8Potential(oophiM2=a4.ts.params["oophiM2"], oophiQ=a4.ts.params["oophiQ"],)
-    #catch
-    #    @warn "No ts.params field, setting phi0=1.0, oophiM2=-1,0 and oophiQ=0.1"
-    #end
+    fid    = h5open(string(io.recover_dir,"phi_mathematica.h5"), "r")
+    f      = read(fid)
 
-    interp = xy_interpolator(x,y)
+    phiug1 = f["phi c1"]
+    phiug2 = f["phi c2"]
+    phi0   = f["phi0"]
+    a4     = f["a4"]
+    xi     = f["xi"]
 
-    a4_inter   = interp(a4[:,:,:])
-    fx2_inter  = interp(fx2[:,:,:])
-    fy2_inter  = interp(fy2[:,:,:])
-    phi2_inter = interp(phi2[:,:,:])
-    xi_inter   = interp(xi[:,:,:])
+    fill!(boundary.a4, a4)
+    fill!(boundary.fx2, 0.0)
+    fill!(boundary.fy2, 0.0)
+    fill!(gauge.xi, xi)
+    fill!(bulkevols[1].B1, 0.0)
+    fill!(bulkevols[1].B2, 0.0)
+    fill!(bulkevols[1].G, 0.0)
+    fill!(bulkevols[2].B1, 0.0)
+    fill!(bulkevols[2].B2, 0.0)
+    fill!(bulkevols[2].G, 0.0)
 
-    a4_new   = zeros(Nx_new,Ny_new)
-    fx2_new  = zeros(Nx_new,Ny_new)
-    fy2_new  = zeros(Nx_new,Ny_new)
-    phi2_new = zeros(Nx_new,Ny_new)
+    phi1 = bulkevols[1].phi
+    phi2 = bulkevols[2].phi
 
-    u = Array{Array{Real,1},1}(undef,Nsys)
-    println("We start the insertion in the new box")
-
-    for i in 1:Nsys
-        B1  = BulkTimeSeries(dirname, :B1, i)
-        B2  = BulkTimeSeries(dirname, :B2, i)
-        G   = BulkTimeSeries(dirname, :G, i)
-        phi = BulkTimeSeries(dirname, :phi, i)
-        u[i]   = systems[i].ucoord[:]
-
-        B1_inter  = interp(B1[end,:,:,:])
-        B2_inter  = interp(B2[end,:,:,:])
-        G_inter   = interp(G[end,:,:,:])
-        phi_inter = interp(phi[end,:,:,:])
-        for l in 1:Ny_new
-            for k in 1:Nx_new
-                if xmin<=x_new[k]<=xmax && ymin<=y_new[l]<=ymax
-                    bulkevols[i].B1[:,k,l]  = B1_inter(x_new[k],y_new[l])
-                    bulkevols[i].B2[:,k,l]  = B2_inter(x_new[k],y_new[l])
-                    bulkevols[i].G[:,k,l]   = G_inter(x_new[k],y_new[l])
-                    bulkevols[i].phi[:,k,l] = phi_inter(x_new[k],y_new[l])
-                    if i == 1
-                        a4_new[k,l]     = a4_inter(x_new[k],y_new[l])[1]
-                        fx2_new[k,l]    = fx2_inter(x_new[k],y_new[l])[1]
-                        fy2_new[k,l]    = fy2_inter(x_new[k],y_new[l])[1]
-                        phi2_new[k,l]   = phi2_inter(x_new[k],y_new[l])[1]
-                        gauge.xi[1,k,l] = xi_inter(x_new[k],y_new[l])[1]
-                    end
-                elseif xmin<=x_new[k]<=xmax
-                    bulkevols[i].B1[:,k,l]  = B1_inter(x_new[k],ymin)
-                    bulkevols[i].B2[:,k,l]  = B2_inter(x_new[k],ymin)
-                    bulkevols[i].G[:,k,l]   = G_inter(x_new[k],ymin)
-                    bulkevols[i].phi[:,k,l] = phi_inter(x_new[k],ymin)
-                    if i == 1
-                        a4_new[k,l]     = a4_inter(x_new[k],ymin)[1]
-                        fx2_new[k,l]    = fx2_inter(x_new[k],ymin)[1]
-                        fy2_new[k,l]    = fy2_inter(x_new[k],ymin)[1]
-                        phi2_new[k,l]   = phi2_inter(x_new[k],ymin)[1]
-                        gauge.xi[1,k,l] = xi_inter(x_new[k],ymin)[1]
-                    end
-                elseif ymin<=y_new[l]<=ymax
-                    bulkevols[i].B1[:,k,l]  = B1_inter(xmin,y_new[l])
-                    bulkevols[i].B2[:,k,l]  = B2_inter(xmin,y_new[l])
-                    bulkevols[i].G[:,k,l]   = G_inter(xmin,y_new[l])
-                    bulkevols[i].phi[:,k,l] = phi_inter(xmin,y_new[l])
-                    if i == 1
-                        a4_new[k,l]     = a4_inter(xmin,y_new[l])[1]
-                        fx2_new[k,l]    = fx2_inter(xmin,y_new[l])[1]
-                        fy2_new[k,l]    = fy2_inter(xmin,y_new[l])[1]
-                        phi2_new[k,l]   = phi2_inter(xmin,y_new[l])[1]
-                        gauge.xi[1,k,l] = xi_inter(xmin,y_new[l])[1]
-                    end
-                else
-                    bulkevols[i].B1[:,k,l]  = B1[end,:,1,1]
-                    bulkevols[i].B2[:,k,l]  = B2[end,:,1,1]
-                    bulkevols[i].G[:,k,l]   = G[end,:,1,1]
-                    bulkevols[i].phi[:,k,l] = phi[end,:,1,1]
-                    if i == 1
-                        a4_new[k,l]   = a4[end,1,1]
-                        fx2_new[k,l]  = fx2[end,1,1]
-                        fy2_new[k,l]  = fy2[end,1,1]
-                        phi2_new[k,l] = phi2[end,1,1]
-                        gauge.xi[1,k,l] = xi[end,1,1]
-                    end
-                end
-            end
-        end
-    end
-    println("Already set in the new box")
-    e       = AdS5_3_1.compute_energy.(a4_new, phi2_new, phi0, oophiM2)
-    e_new   = new_parameters.e_new
-    fx20    = new_parameters.fx20
-    fy20    = new_parameters.fy20
-#change of energy
-    if e_new != -1.0
-        plan   = plan_rfft(e)
-        e0     = real(1/(Nx_new*Ny_new)*(plan*e)[1])
-        a40    = real(1/(Nx_new*Ny_new)*(plan*a4_new)[1])
-        #k      = (-4/3*(e_new-e0)*phi0^4-maximum(a4_new)+a40)/(a40-maximum(a4_new))
-        #a4_new = k*(a4_new.-maximum(a4_new)).+maximum(a4_new)
-        a4_new  = a4_new.+4/3*(e0-e_new)
-    end
-#boosting, with static cold phase (edge).
-    if new_parameters.boostx
-        boundary.fx2[1,:,:] .= fx2_new
-        fx2 = fx20*(e)#.-minimum(e))
-        kappa = 0.1/fx20
-    else
-        boundary.fx2[1,:,:] .= fx2_new
-    end
-    if new_parameters.boosty
-        boundary.fy2[1,:,:] .= fy20.*(e.-minimum(e))
-    else
-        boundary.fy2[1,:,:] .= fy2_new
-    end
-#We add the specified a4 cos perturbation
-    ampx    = new_parameters.a4_ampx
-    ampy    = new_parameters.a4_ampy
-    kx      = new_parameters.a4_kx
-    ky      = new_parameters.a4_ky
-    xmin    = grid.x_min
-    xmax    = grid.x_max
-    ymin    = grid.y_min
-    ymax    = grid.y_max
-    xmid    = (xmax+xmin)/2
-    ymid    = (ymax+ymin)/2
-
-    plan   = plan_rfft(a4_new)
-    a40    = real(1/(Nx_new*Ny_new)*(plan*a4_new)[1])
-    for j in 1:Ny_new
-        for i in 1:Nx_new
-            x = x_new[i]
-            y = y_new[j]
-
-            boundary.a4[1,i,j] = a4_new[i,j]-a40*(ampx*cos(2*π*kx*(x-xmid)/(xmax-xmin))
-                                                  +ampy*cos(2*π*ky*(y-ymid)/(ymax-ymin)))
+    @threads for j in 1:Ny
+        for i in 1:Nx
+            phi1[:,i,j] = phiug1
+            phi2[:,i,j] = phiug2
         end
     end
 
-#=
-    #TODO: Change gauge
-    u_AH = new_parameters.u_AH
-    evoleq = AffineNull(phi0=phi0, potential=potential, gaugecondition = ConstantAH(u_AH = 1.0),)
-
-    sigma  = 0.5*ones(1,Nx_new,Ny_new)
-    change_gauge!(sigma, grid, boundary, gauge, bulkevols, evoleq, systems, u_AH)
-    epsilon = 0
-    println("epsilon = $epsilon")
-    evoleq  = AffineNull(phi0=phi0, potential=potential, gaugecondition = ConstantAH(u_AH = u_AH),)
-
-    while epsilon < 1.0
-        n     = 0
-        #kappa = kappa/0.8
-        sigma = 1/(2.0*u[end][end])*ones(1,Nx_new,Ny_new)
-        while maximum(1 ./sigma) >= u[end][end]+0.005
-            if n != 0
-                kappa = kappa*0.8
-            end
-            n += 1
-            aux                 = epsilon+kappa
-            boundary.fx2[1,:,:] = fx2*aux^0.4
-#            boundary.fy2 .= fy2*aux^0.5
-            try
-                change_gauge!(sigma, grid, boundary, gauge, bulkevols, evoleq, systems, u_AH)
-            catch
-
-            end
-        end
-        epsilon += kappa
-        println("epsilon = $epsilon")
-        println("max fx2 = $(maximum(boundary.fx2))")
-    end
-=#
     evolvars = AdS5_3_1.EvolVars(boundary, gauge, bulkevols)
-    create_outputs(io.out_dir, evolvars, chart2D, atlas.charts, io, potential, phi0)
-    #return bulkevols, boundary, gauge
-end
+    create_outputs(io.out_dir, evolvars, chart2D, atlas.x, io, potential, phi0)
 
+    close(fid)
+
+end
 
 #We take 2 equilibrium configurations and we join them along some side and boost them at will.
 #Both configuration should have the same u coordinate settings, at least until we implement changes in create_new_data()
@@ -1213,6 +1366,6 @@ change_gauge!(sigma, grid, boundary, gauge, bulkevols, evoleq, systems, 1.0)
 =#
 #We finally write the output files
 evolvars = AdS5_3_1.EvolVars(boundary, gauge, bulkevols)
-create_outputs(io.out_dir, evolvars, chart2D, atlas.charts, io, potential, phi0)
+create_outputs(io.out_dir, evolvars, chart2D, atlas.x, io, potential, phi0)
 #return sigma
 end
