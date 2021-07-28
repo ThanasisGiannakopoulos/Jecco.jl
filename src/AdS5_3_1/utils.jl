@@ -68,6 +68,16 @@ struct AHTimeSeries{T} <: TimeSeries{2,T}
     end
 end
 
+struct GWTimeSeries{T} <: TimeSeries{2,T}
+    ts    :: T
+    field :: Symbol
+
+    function GWTimeSeries(foldername::String, field::Symbol)
+        ts = OpenPMDTimeSeries(foldername, "perturbation_")
+        new{typeof(ts)}(ts, field)
+    end
+end
+
 
 function get_data(ff::BoundaryTimeSeries, it::Int)
     f, chart = get_field(ff.ts, it=it, field=String(ff.field))
@@ -131,6 +141,12 @@ function get_data(ff::AHTimeSeries, it::Int)
     end
     _, x, y = chart[:]
     f[1,:,:], [x,y]
+end
+
+function get_data(ff::GWTimeSeries, it::Int)
+    f, chart = get_field(ff.ts, it=it, field=String(ff.field))
+    x, y  = chart[:]
+    f[:,:], [x, y]
 end
 
 function Base.size(ff::TimeSeries)
@@ -261,6 +277,48 @@ function convert_to_mathematica(dirname::String; outfile::String="data_mathemati
     close(fid)
 end
 
+function Energy_to_mathematica(dirname::String; dit::Int = 1, outfile::String="energy_mathematica.h5")
+    ts = OpenPMDTimeSeries(dirname, prefix="boundary_")
+
+    iterations = ts.iterations
+
+    Nt = length(iterations)
+    t  = zeros(Nt)
+
+    it = 0
+    _, chart = get_energy(ts, it=it)
+
+    _, x, y = chart[:]
+    Nx = length(x)
+    Ny = length(y)
+
+    en   = zeros(Nt,Nx,Ny)
+
+    for (idx,it) in enumerate(iterations)
+        en[idx,:,:] = get_energy(ts, it=it)[1][1,:,:]
+        t[idx]      = ts.current_t
+    end
+
+    # store in an array suitable for Mathematica
+    T_m = zeros(4, Int(floor(Nt/dit))*Nx*Ny)
+
+    n = 1
+    @fastmath @inbounds for i in 1:dit:Nt-Nt%dit
+        for j in 1:Nx
+            for k in 1:Ny
+                T_m[:,n] = [t[i] x[j] y[k] en[i,j,k]]
+                n += 1
+            end
+        end
+    end
+
+    output   = abspath(dirname, outfile)
+    fid      = h5open(output, "w")
+    group_st = g_create(fid, "data")
+    Jecco.write_dataset(group_st, "VEVs", T_m)
+    close(fid)
+end
+
 function convert_to_mathematica_local(dirname::String; outfile::String="local_data_mathematica.h5")#,
                                 #phi0, oophiM2)
 
@@ -322,4 +380,45 @@ function convert_to_mathematica_local(dirname::String; outfile::String="local_da
     close(fid)
 
 
+end
+
+function GW_to_mathematica(dirname::String; dit::Int = 1, outfile::String="GW_mathematica.h5")
+
+    ts         = OpenPMDTimeSeries(dirname, prefix="perturbation_")
+    iterations = ts.iterations
+    Nt         = length(iterations)
+    t          = zeros(Nt)
+    it         = 0
+    _, chart   = get_field(ts, it=it, field="hxx")
+    x, y       = chart[:]
+    Nx, Ny     = size(chart)
+    hdot2      = zeros(Nt, Nx, Ny)
+
+    for (idx,it) in enumerate(iterations)
+        hdxx           = get_field(ts, it=it, field="hdxx")[1]
+        hdxy           = get_field(ts, it=it, field="hdxy")[1]
+        hdyy           = get_field(ts, it=it, field="hdyy")[1]
+        hdzz           = get_field(ts, it=it, field="hdzz")[1]
+        t[idx]         = ts.current_t
+        hdot2[idx,:,:] = hdxx.^2+hdxy.^2+hdyy.^2+hdzz.^2
+    end
+
+    # store in an array suitable for Mathematica
+    hdot2_m = zeros(4, Int(floor(Nt/dit))*Nx*Ny)
+
+    n = 1
+    @fastmath @inbounds for i in 1:dit:Nt-Nt%dit
+        for j in 1:Nx
+            for k in 1:Ny
+                hdot2_m[:,n] = [t[i] x[j] y[k] hdot2[i,j,k]]
+                n += 1
+            end
+        end
+    end
+
+    output   = abspath(dirname, outfile)
+    fid      = h5open(output, "w")
+    group_st = g_create(fid, "data")
+    Jecco.write_dataset(group_st, "hdot2", hdot2_m)
+    close(fid)
 end

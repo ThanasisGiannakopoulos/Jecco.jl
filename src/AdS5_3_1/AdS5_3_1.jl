@@ -55,7 +55,9 @@ include("VEVs.jl")
 
 # random utilities useful for post-processing
 include("utils.jl")
-include("design_new_data.jl")
+include("design_new_data_1.jl")
+include("design_new_data_2.jl")
+include("design_new_data_3.jl")
 include("recipes.jl")
 include("GW.jl")
 
@@ -85,7 +87,7 @@ export System, SystemPartition
 export BulkEvolvedPartition, BulkConstrainedPartition, BulkDerivPartition
 export Integration, InOut, run_model
 export get_energy, get_Jx, get_Jy, get_px, get_py, get_pz, get_pxy, get_Ophi
-export BoundaryTimeSeries, XiTimeSeries, BulkTimeSeries, VEVTimeSeries, ConstrainedTimeSeries
+export BoundaryTimeSeries, XiTimeSeries, BulkTimeSeries, VEVTimeSeries, ConstrainedTimeSeries, GWTimeSeries
 export convert_to_mathematica
 
 end

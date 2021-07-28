@@ -2,12 +2,12 @@
 using Jecco.AdS5_3_1
 
 grid = SpecCartGrid3D(
-    x_min            = -0.5,
-    x_max            =  0.5,
-    x_nodes          =  6,
-    y_min            = -0.5,
-    y_max            =  0.5,
-    y_nodes          =  6,
+    x_min            = -115.,
+    x_max            =  115.,
+    x_nodes          =  575,
+    y_min            = -100.,
+    y_max            =  100.,
+    y_nodes          =  500,
     u_outer_min      =  0.1,
     u_outer_max      =  1.005,
     u_outer_domains  =  1,
@@ -17,24 +17,30 @@ grid = SpecCartGrid3D(
     sigma_diss       =  0.2,
 )
 
+
+phiM2 = -(1.0)^2
+phiQ  = 10.
+
 potential = AdS5_3_1.Phi8Potential(
     #alpha   = -0.01,
     #beta    = 8,
     #gamma   = 0.1,
-    oophiM2 = -1.38408,
-    oophiQ  = 0.1,
+    oophiM2 = 1/phiM2,
+    oophiQ  = 1/phiQ,
 )
 
 id = BlackBranePert(
-    energy_dens = 0.13,
+    energy_dens = 0.8,
     phi0        = 1.0,
-    phi2        = 0.8,
+    phi2        = 0.3,
     oophiM2     = potential.oophiM2,
     #phi5        = 1.1,
-    #a4_ampx     = -0.05,
-    #a4_kx       = 1,
+    a4_ampx     = -0.005,
+    a4_kx       = 1,
+    a4_ampy     = -0.005,
+    a4_ky       = 1,
     xi0         = 0.02,
-    AH_pos      = 0.95,
+    AH_pos      = 1.0,
     xmax        = grid.x_max,
     xmin        = grid.x_min,
     ymin        = grid.y_min,
@@ -48,15 +54,15 @@ evoleq = AffineNull(
 )
 
 diag = DiagAH(
-    find_AH_every_t    = 1.0,
+    find_AH_every_t    = 0.1,
 )
 
-outdir = "/Users/apple/Documents/Jecco.jl/data/bubbles/state_B_e_0.13"
+outdir = "/home/mikel/Documents/Jecco.jl/data/run/"
 
 io = InOut(
-    out_boundary_every_t        = 0.5,
-    out_bulk_every_t            = 0.5,
-    out_gauge_every_t           = 0.5,
+    out_boundary_every_t        = 1.,
+    out_bulk_every_t            = 1.,
+    out_gauge_every_t           = 1.,
     #out_bulkconstrained_every_t = 5.0,
     checkpoint_every_walltime_hours = 1,
     out_dir                     = outdir,

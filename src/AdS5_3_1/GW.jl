@@ -13,15 +13,16 @@ using OrdinaryDiffEq
 abstract type Parameters end
 
 struct param{T<:Interpolations.GriddedInterpolation, TP<:Real} <: Parameters
-    px :: T
+    px  :: T
     pxy :: T
-    py :: T
-    pz :: T
-    x  :: Array{TP,1}
-    y  :: Array{TP,1}
-    kx :: Array{TP,2}
-    ky :: Array{TP,2}
-    dt :: TP
+    py  :: T
+    pz  :: T
+    x   :: Array{TP,1}
+    y   :: Array{TP,1}
+    kx  :: Array{TP,2}
+    ky  :: Array{TP,2}
+    dt  :: TP
+    tol :: TP
 end
 
 function get_evol_variable(u::Array{T,3}, u_t::Array{T,3}) where {T<:Complex}
@@ -65,6 +66,7 @@ end
 
 
 function rhs(h_evol::Array{T,1}, param::Parameters, t::TP) where {T<:Complex, TP<:Real}
+    tol       = param.tol
     px_inter  = param.px(t,param.x,param.y)
     pxy_inter = param.pxy(t,param.x,param.y)
     py_inter  = param.py(t,param.x,param.y)
@@ -77,7 +79,6 @@ function rhs(h_evol::Array{T,1}, param::Parameters, t::TP) where {T<:Complex, TP
     pxy       = Fourier_Transform_2D(pxy_inter)
     py        = Fourier_Transform_2D(py_inter)
     pz        = Fourier_Transform_2D(pz_inter)
-    tol       = 10^-20
 
     h, h_t    = get_tensors(h_evol, Nkx, Nky)
     dh        = similar(h)
@@ -89,14 +90,13 @@ function rhs(h_evol::Array{T,1}, param::Parameters, t::TP) where {T<:Complex, TP
 #Also it might be better to solve all kx and ky as matrix equation at once
 #and do a loop over the 4 components that we have to solve.
 #Bear in mind that we will get to runs with many points in x and y.
-    @time for j in 1:Nky
+    @time @fastmath @inbounds @threads for j in 1:Nky
         for i in 1:Nkx
             kkx  = kx[i,j]
             kky  = ky[i,j]
             kkx2 = kkx^2
             kky2 = kky^2
             k2   = kkx^2+kky^2
-
             ppx  = px[i,j]
             ppxy = pxy[i,j]
             ppy  = py[i,j]
@@ -115,11 +115,11 @@ function rhs(h_evol::Array{T,1}, param::Parameters, t::TP) where {T<:Complex, TP
     ppxy        = pxy[1,1]
     ppy         = py[1,1]
     ppz         = pz[1,1]
-    trT         = ppx+ppy+ppz
+    trT         = ppx + ppy + ppz
     M           = [ppx, ppxy, ppy, ppz] -1/3*trT.*[1,0,1,1]
-    indices = findall(abs.(M) .< tol)
+    indices     = findall(abs.(M) .< tol)
     for i in indices
-        M[i] = 0.0
+        M[i]    = 0.0
     end
     dh_t[1,1,:] = -M
 
@@ -128,7 +128,7 @@ end
 
 #Computes the component associated to field in the bounbdary stress tensor.
 #E.g. field=energy gives us h00 as solution.
-function solve_GW(dirname::String; dt::T = 0.0, alg, option::String="static") where {T<:Real}
+function solve_GW(dirname::String; dt::T = 0.0, alg, option::String="static", tol::T=10^-10) where {T<:Real}
     px       = VEVTimeSeries(dirname, :px)
     pxy      = VEVTimeSeries(dirname, :pxy)
     py       = VEVTimeSeries(dirname, :py)
@@ -145,7 +145,7 @@ function solve_GW(dirname::String; dt::T = 0.0, alg, option::String="static") wh
     kx       = zeros(Nkx,Nky)
     ky       = zeros(Nkx,Nky)
 
-    @time @threads for j in eachindex(kyy)
+    @time @fastmath @inbounds @threads for j in eachindex(kyy)
         for i in eachindex(kxx)
             kx[i,j] = kxx[i]
             ky[i,j] = kyy[j]
@@ -159,7 +159,7 @@ function solve_GW(dirname::String; dt::T = 0.0, alg, option::String="static") wh
     pz_inter  = interpolate((tt,x,y,), pz[:,:,:], Gridded(Linear()))
     ff_inter  = [px_inter, pxy_inter, py_inter, pz_inter]
     prm       = param{typeof(px_inter),typeof(x[1])}(px_inter,pxy_inter,py_inter,pz_inter,
-                                                            x,y,kx,ky,dt)
+                                                            x,y,kx,ky,dt,tol)
     problem    = ODEProblem(rhs, h0_evol, tspan, prm)
     integrator = init(problem, alg, save_everystep=false, dt=dt, adaptive=false)
 
